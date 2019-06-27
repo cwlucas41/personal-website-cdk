@@ -1,6 +1,11 @@
 import cdk = require('@aws-cdk/core');
+import acm = require('@aws-cdk/aws-certificatemanager');
+import cloudfront = require('@aws-cdk/aws-cloudfront');
+import s3 = require('@aws-cdk/aws-s3');
 import route53 = require('@aws-cdk/aws-route53');
+import targets = require('@aws-cdk/aws-route53-targets');
 import { AddressRecordTarget } from '@aws-cdk/aws-route53';
+import { PriceClass } from '@aws-cdk/aws-cloudfront';
 
 
 export class PersonalWebsiteStack extends cdk.Stack {
@@ -11,6 +16,37 @@ export class PersonalWebsiteStack extends cdk.Stack {
     const secondaryDomains = ["chriswlucas.org", "chriswlucas.net"]
 
     const allDomains = [primaryDomain, ...secondaryDomains]
+
+    // Hosting
+
+    const siteBucket = new s3.Bucket(this, `${primaryDomain}-origin-bucket`, {
+      bucketName: `${primaryDomain}-origin`,
+      publicReadAccess: true,
+    })
+
+    const certificate = new acm.Certificate(this, `${primaryDomain}-certificate`, {
+      domainName: primaryDomain,
+      subjectAlternativeNames: secondaryDomains,
+    })
+
+    const distribution = new cloudfront.CloudFrontWebDistribution(this, `${primaryDomain}-distribution`, {
+      aliasConfiguration: {
+        acmCertRef: certificate.certificateArn,
+        names: allDomains,
+        sslMethod: cloudfront.SSLMethod.SNI,
+      },
+      originConfigs: [
+        {
+          s3OriginSource: { s3BucketSource: siteBucket },
+          behaviors: [
+            { isDefaultBehavior: true }
+          ]
+        }
+      ],
+      priceClass: PriceClass.PRICE_CLASS_100
+    })
+
+    // DNS
 
     const zones = allDomains
       .reduce(
@@ -25,15 +61,15 @@ export class PersonalWebsiteStack extends cdk.Stack {
 
     allDomains.forEach(domain => {
 
-      new route53.ARecord(this, `${domain}-a-nfs`, {
+      new route53.ARecord(this, `${domain}-a-apex-cf`, {
         zone: zones[domain],
-        target: AddressRecordTarget.fromIpAddresses('208.94.118.206')
+        target: AddressRecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
       })
-  
-      new route53.CnameRecord(this, `${domain}-cname-nfs`, {
+
+      new route53.ARecord(this, `${domain}-a-www-cf`, {
         zone: zones[domain],
         recordName: `www.${domain}`,
-        domainName: 'cwlhome.nfshost.com.',
+        target: AddressRecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
       })
 
       new route53.MxRecord(this, `${domain}-mx-gmail`, {
