@@ -1,6 +1,11 @@
 {
   "name": "personal_website",
   "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cwlucas41/personal-website-cdk"
+  },
   "bin": {
     "personal_website": "bin/personal_website.js"
   },
