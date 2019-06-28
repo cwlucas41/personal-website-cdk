@@ -7,6 +7,7 @@ import targets = require('@aws-cdk/aws-route53-targets');
 import { AddressRecordTarget } from '@aws-cdk/aws-route53';
 import { PriceClass } from '@aws-cdk/aws-cloudfront';
 
+interface ZoneMap { [index: string]: route53.PublicHostedZone }
 
 export class PersonalWebsiteStack extends cdk.Stack {
   constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
@@ -15,24 +16,46 @@ export class PersonalWebsiteStack extends cdk.Stack {
     const primaryDomain = "chriswlucas.com"
     const secondaryDomains = ["chriswlucas.org", "chriswlucas.net"]
 
-    const allDomains = [primaryDomain, ...secondaryDomains]
+    const apexDomains = [primaryDomain, ...secondaryDomains]
 
-    // Hosting
+    // Hosted Zones
+
+    const zoneMap = apexDomains
+      .reduce(
+        (object, domain) => {
+
+          object[domain] = new route53.PublicHostedZone(this, domain, {
+            zoneName: domain
+          });
+
+          return object
+        },
+        {} as ZoneMap,
+      )
+
+    // Website
+
+    const websiteDomains = apexDomains
+      .map(domain => [domain, `www.${domain}`])
+      .reduce((x,y) => x.concat(y), [])
 
     const siteBucket = new s3.Bucket(this, `${primaryDomain}-origin-bucket`, {
       bucketName: `${primaryDomain}-origin`,
+
+      // TODO: update to use origin access identity instead of public read access
+      // Blocked on https://github.com/awslabs/aws-cdk/issues/941
       publicReadAccess: true,
     })
 
     const certificate = new acm.Certificate(this, `${primaryDomain}-certificate`, {
       domainName: primaryDomain,
-      subjectAlternativeNames: secondaryDomains,
+      subjectAlternativeNames: websiteDomains.filter(domain => domain !== primaryDomain),
     })
 
     const distribution = new cloudfront.CloudFrontWebDistribution(this, `${primaryDomain}-distribution`, {
       aliasConfiguration: {
         acmCertRef: certificate.certificateArn,
-        names: allDomains,
+        names: websiteDomains,
         sslMethod: cloudfront.SSLMethod.SNI,
       },
       originConfigs: [
@@ -46,34 +69,22 @@ export class PersonalWebsiteStack extends cdk.Stack {
       priceClass: PriceClass.PRICE_CLASS_100
     })
 
-    // DNS
+    websiteDomains.forEach(domain => {
+      const apexDomain = apexDomains.filter(apexDomain => domain.includes(apexDomain))[0]
 
-    const zones = allDomains
-      .reduce(
-        (object, domain) => {
-          object[domain] = new route53.PublicHostedZone(this, domain, {
-            zoneName: domain
-          });
-          return object
-        },
-        {} as { [index: string]: route53.PublicHostedZone },
-      )
-
-    allDomains.forEach(domain => {
-
-      new route53.ARecord(this, `${domain}-a-apex-cf`, {
-        zone: zones[domain],
+      new route53.ARecord(this, `${domain}-cf-aliases`, {
+        zone: zoneMap[apexDomain],
+        recordName: domain,
         target: AddressRecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
       })
+    })
 
-      new route53.ARecord(this, `${domain}-a-www-cf`, {
-        zone: zones[domain],
-        recordName: `www.${domain}`,
-        target: AddressRecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
-      })
+    // Email
+
+    apexDomains.forEach(domain => {
 
       new route53.MxRecord(this, `${domain}-mx-gmail`, {
-        zone: zones[domain],
+        zone: zoneMap[domain],
         values: [
           { hostName: 'ASPMX.L.GOOGLE.COM.', priority: 1 },
           { hostName: 'ALT1.ASPMX.L.GOOGLE.COM.', priority: 5 },
@@ -84,7 +95,7 @@ export class PersonalWebsiteStack extends cdk.Stack {
       })
 
       new route53.TxtRecord(this, `${domain}-txt-spf`, {
-        zone: zones[domain],
+        zone: zoneMap[domain],
         values: ['v=spf1 include:_spf.google.com ~all']
       })
     })
