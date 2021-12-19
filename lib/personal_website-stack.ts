@@ -1,16 +1,15 @@
-import cdk = require('@aws-cdk/core');
-import acm = require('@aws-cdk/aws-certificatemanager');
-import cloudfront = require('@aws-cdk/aws-cloudfront');
-import s3 = require('@aws-cdk/aws-s3');
-import route53 = require('@aws-cdk/aws-route53');
-import targets = require('@aws-cdk/aws-route53-targets');
-import { RecordTarget } from '@aws-cdk/aws-route53';
-import { PriceClass } from '@aws-cdk/aws-cloudfront';
+import { Construct } from 'constructs';
+import { Stack, StackProps } from 'aws-cdk-lib';
+import { aws_s3 as s3 } from 'aws-cdk-lib';
+import { aws_route53 as route53 } from 'aws-cdk-lib';
+import { aws_route53_targets as route53_targets } from 'aws-cdk-lib';
+import { aws_cloudfront as cloudfront } from 'aws-cdk-lib';
+import { aws_certificatemanager as acm } from 'aws-cdk-lib';
 
 interface ZoneMap { [index: string]: route53.PublicHostedZone }
 
-export class PersonalWebsiteStack extends cdk.Stack {
-  constructor(scope: cdk.Construct, id: string, props?: cdk.StackProps) {
+export class PersonalWebsiteStack extends Stack {
+  constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
     const primaryDomain = "chriswlucas.com"
@@ -50,26 +49,29 @@ export class PersonalWebsiteStack extends cdk.Stack {
       subjectAlternativeNames: websiteDomains.filter(domain => domain !== primaryDomain),
     })
 
+    const viewerCertificate = cloudfront.ViewerCertificate.fromAcmCertificate(
+      certificate,
+      {
+        aliases: websiteDomains,
+        sslMethod: cloudfront.SSLMethod.SNI,
+      },
+    )
+
     const distribution = new cloudfront.CloudFrontWebDistribution(this, `${primaryDomain}-distribution`, {
-      viewerCertificate: cloudfront.ViewerCertificate.fromAcmCertificate(
-        certificate, 
-        {
-          aliases: websiteDomains,
-          sslMethod: cloudfront.SSLMethod.SNI,
-        },
-      ),
+      viewerCertificate,
       originConfigs: [
         {
           s3OriginSource: { 
             s3BucketSource: siteBucket,
             originAccessIdentity: oai,
           },
-          behaviors: [
-            { isDefaultBehavior: true }
-          ]
+          behaviors: [{
+              isDefaultBehavior: true,
+              compress: true,
+          }]
         }
       ],
-      priceClass: PriceClass.PRICE_CLASS_100
+      priceClass: cloudfront.PriceClass.PRICE_CLASS_100
     })
 
     // www subdomain redirection
@@ -79,7 +81,7 @@ export class PersonalWebsiteStack extends cdk.Stack {
       new route53.ARecord(this, `${domain}-cf-aliases`, {
         zone: zoneMap[apexDomain],
         recordName: domain,
-        target: RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
+        target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(distribution)),
       })
     })
 
