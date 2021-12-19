@@ -4,7 +4,7 @@ import cloudfront = require('@aws-cdk/aws-cloudfront');
 import s3 = require('@aws-cdk/aws-s3');
 import route53 = require('@aws-cdk/aws-route53');
 import targets = require('@aws-cdk/aws-route53-targets');
-import { AddressRecordTarget } from '@aws-cdk/aws-route53';
+import { RecordTarget } from '@aws-cdk/aws-route53';
 import { PriceClass } from '@aws-cdk/aws-cloudfront';
 
 interface ZoneMap { [index: string]: route53.PublicHostedZone }
@@ -19,7 +19,6 @@ export class PersonalWebsiteStack extends cdk.Stack {
     const apexDomains = [primaryDomain, ...secondaryDomains]
 
     // Hosted Zones
-
     const zoneMap = apexDomains
       .reduce(
         (object, domain) => {
@@ -34,18 +33,17 @@ export class PersonalWebsiteStack extends cdk.Stack {
       )
 
     // Website
-
     const websiteDomains = apexDomains
       .map(domain => [domain, `www.${domain}`])
       .reduce((x,y) => x.concat(y), [])
 
     const siteBucket = new s3.Bucket(this, `${primaryDomain}-origin-bucket`, {
       bucketName: `${primaryDomain}-origin`,
-
-      // TODO: update to use origin access identity instead of public read access
-      // Blocked on https://github.com/awslabs/aws-cdk/issues/941
-      publicReadAccess: true,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED
     })
+
+    const oai = new cloudfront.OriginAccessIdentity(this, 'OAI');
 
     const certificate = new acm.Certificate(this, `${primaryDomain}-certificate`, {
       domainName: primaryDomain,
@@ -53,14 +51,19 @@ export class PersonalWebsiteStack extends cdk.Stack {
     })
 
     const distribution = new cloudfront.CloudFrontWebDistribution(this, `${primaryDomain}-distribution`, {
-      aliasConfiguration: {
-        acmCertRef: certificate.certificateArn,
-        names: websiteDomains,
-        sslMethod: cloudfront.SSLMethod.SNI,
-      },
+      viewerCertificate: cloudfront.ViewerCertificate.fromAcmCertificate(
+        certificate, 
+        {
+          aliases: websiteDomains,
+          sslMethod: cloudfront.SSLMethod.SNI,
+        },
+      ),
       originConfigs: [
         {
-          s3OriginSource: { s3BucketSource: siteBucket },
+          s3OriginSource: { 
+            s3BucketSource: siteBucket,
+            originAccessIdentity: oai,
+          },
           behaviors: [
             { isDefaultBehavior: true }
           ]
@@ -69,20 +72,19 @@ export class PersonalWebsiteStack extends cdk.Stack {
       priceClass: PriceClass.PRICE_CLASS_100
     })
 
+    // www subdomain redirection
     websiteDomains.forEach(domain => {
       const apexDomain = apexDomains.filter(apexDomain => domain.includes(apexDomain))[0]
 
       new route53.ARecord(this, `${domain}-cf-aliases`, {
         zone: zoneMap[apexDomain],
         recordName: domain,
-        target: AddressRecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
+        target: RecordTarget.fromAlias(new targets.CloudFrontTarget(distribution)),
       })
     })
 
     // Email
-
     apexDomains.forEach(domain => {
-
       new route53.MxRecord(this, `${domain}-mx-gmail`, {
         zone: zoneMap[domain],
         values: [
