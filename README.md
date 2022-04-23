@@ -1,6 +1,6 @@
 # personal-website-cdk
 
-Contains the Infrastructure to host [www.chriswlucas.com](). Website content is hosted in [personal-website-content](https://github.com/cwlucas41/personal-website-content) and licensed separately from this infrastructure.
+Contains the Infrastructure to host [www.chriswlucas.com](https://www.chriswlucas.com). Website content is hosted in [personal-website-content](https://github.com/cwlucas41/personal-website-content) and licensed separately from this infrastructure.
 
 ## Features
 * CloudFront hosting of website content in an S3 bucket
