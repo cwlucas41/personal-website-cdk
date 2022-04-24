@@ -22,6 +22,10 @@ export class PersonalWebsiteStack extends Stack {
 
     const apexDomains = [primaryDomain, "chriswlucas.org", "chriswlucas.net"]
 
+    const verificationRecordsMap = new Map([
+      [ primaryDomain, [ 'keybase-site-verification=74xSzNnFzF37JGsYtlTgQ5ip70dKbUvAQLpHnaxiEp4' ] ],
+    ])
+
     // Hosted Zones
     const apexDomadinZoneMap = apexDomains
       .reduce(
@@ -162,9 +166,10 @@ export class PersonalWebsiteStack extends Stack {
 
     })
 
-    // Email
+    // Other DNS records
     apexDomains.forEach(apexDomain => {
 
+      // Email
       new route53.MxRecord(this, `${apexDomain}-mx-gmail`, {
         zone: apexDomadinZoneMap[apexDomain],
         values: [
@@ -176,9 +181,13 @@ export class PersonalWebsiteStack extends Stack {
         ]
       })
 
+      // TXT: configuration & verification
       new route53.TxtRecord(this, `${apexDomain}-txt-spf`, {
         zone: apexDomadinZoneMap[apexDomain],
-        values: ['v=spf1 include:_spf.google.com ~all']
+        values: [
+          'v=spf1 include:_spf.google.com ~all',
+          ...verificationRecordsMap.get(apexDomain) ?? []
+        ]
       })
 
     })
