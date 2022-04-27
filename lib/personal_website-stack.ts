@@ -13,11 +13,6 @@ interface DomainConfig {
   readonly additionalTxtRecords?: string[],
 }
 
-interface DomainProps {
-  readonly zone: route53.HostedZone,
-  readonly additionalTxtRecords: string[],
-}
-
 export interface PersonalWebsiteStackProps extends StackProps {
   readonly websiteSubdomain: string,
   readonly primaryDomainConfig: DomainConfig,
@@ -28,18 +23,25 @@ export class PersonalWebsiteStack extends Stack {
   constructor(scope: Construct, id: string, props: PersonalWebsiteStackProps) {
     super(scope, id, props);
 
-    const websiteDomain = `${props.websiteSubdomain}.${props.primaryDomainConfig.domain}`
+    interface DomainProps {
+      readonly zone: route53.HostedZone,
+      readonly additionalTxtRecords: string[],
+    }
 
     const domainConfigMap: Map<string, DomainProps> = new Map(
       [props.primaryDomainConfig, ...props.secondaryDomainConfigs]
         .map(config => [config.domain, {
+          // Creates hosted zones
           zone: new route53.PublicHostedZone(this, config.domain, { zoneName: config.domain }),
+
           additionalTxtRecords: config.additionalTxtRecords ?? [],
         }])
     )
 
-    const primaryZone = domainConfigMap.get(props.primaryDomainConfig.domain)!.zone
+    const websiteDomain = `${props.websiteSubdomain}.${props.primaryDomainConfig.domain}`
+    const websiteZone = domainConfigMap.get(props.primaryDomainConfig.domain)!.zone
 
+    // Logging bucket retains only for limited number of days
     const accessLogBucket = new s3.Bucket(this, `access-logs-bucket`, {
       bucketName: `${id.toLowerCase()}-access-logs`,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -48,7 +50,47 @@ export class PersonalWebsiteStack extends Stack {
     })
 
     // Website hosting
+    this.createWebHostingInfra(websiteDomain, websiteZone, accessLogBucket)
 
+
+    // for each domain
+    domainConfigMap.forEach((config, apexDomain) => {
+
+      // primary domain doesn't need website subdomain redirection
+      const redirectingSubdomains = apexDomain != props.primaryDomainConfig.domain ? [props.websiteSubdomain] : []
+
+      // Configure necessary redirection
+      this.createDomainRedirectInfra(apexDomain, redirectingSubdomains, websiteDomain, config.zone, accessLogBucket)
+
+      // Configure email records
+      new route53.MxRecord(this, `${apexDomain}-mx-gmail`, {
+        zone: config.zone,
+        values: [
+          { hostName: 'ASPMX.L.GOOGLE.COM.', priority: 1 },
+          { hostName: 'ALT1.ASPMX.L.GOOGLE.COM.', priority: 5 },
+          { hostName: 'ALT2.ASPMX.L.GOOGLE.COM.', priority: 5 },
+          { hostName: 'ALT3.ASPMX.L.GOOGLE.COM.', priority: 10 },
+          { hostName: 'ALT4.ASPMX.L.GOOGLE.COM.', priority: 10 },
+        ]
+      })
+
+      // Configure various TXT records
+      new route53.TxtRecord(this, `${apexDomain}-txt-spf`, {
+        zone: config.zone,
+        values: [
+          'v=spf1 include:_spf.google.com ~all', // for Gmail
+          ...config.additionalTxtRecords,
+        ]
+      })
+
+    })
+  }
+
+  createWebHostingInfra(
+    websiteDomain: string,
+    zone: route53.HostedZone,
+    accessLogBucket: s3.Bucket,
+  ) {
     const siteBucket = new s3.Bucket(this, `${websiteDomain}-origin-bucket`, {
       bucketName: `${websiteDomain}`,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -57,7 +99,7 @@ export class PersonalWebsiteStack extends Stack {
 
     const certificate = new acm.Certificate(this, `${websiteDomain}-cert`, {
       domainName: websiteDomain,
-      validation: acm.CertificateValidation.fromDns(primaryZone)
+      validation: acm.CertificateValidation.fromDns(zone)
     })
 
     const urlRewriteFn = new cloudfront.Function(this, "url-rewrite-fn", {
@@ -101,96 +143,71 @@ export class PersonalWebsiteStack extends Stack {
 
     // direct route for website
     new route53.ARecord(this, `${websiteDomain}-to-cf`, {
-      zone: primaryZone,
+      zone: zone,
       recordName: websiteDomain,
       target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(distribution)),
     })
+  }
 
-    // indirect routes as aliases for website
-    //
-    // each domain has a s3 redirecting bucket fronted by
-    // cloudformation (to provide https redirection) which
-    // redirects all requests to the website domain direct route.
-    //
-    // alternate names also exist to alias various subdomains
-    // to their redirecting bucket so that they are also redirected
-    // to the website domain.
-    domainConfigMap.forEach((config, apexDomain) => {
+  // indirect routes as aliases for website
+  //
+  // each domain has a s3 redirecting bucket fronted by
+  // cloudformation (to provide https redirection) which
+  // redirects all requests to the website domain direct route.
+  //
+  // alternate names also exist to alias various subdomains
+  // to their redirecting bucket so that they are also redirected
+  // to the website domain.
+  createDomainRedirectInfra(
+    apexDomain: string,
+    redirectingSubdomains: string[],
+    targetDomain: string,
+    zone: route53.HostedZone,
+    accessLogBucket: s3.Bucket,
+  ) {
+    const alternateNames = redirectingSubdomains.map(subdomain => `${subdomain}.${apexDomain}`)
 
-      const alternateNames = [props.websiteSubdomain]
-        .map(subdomain => `${subdomain}.${apexDomain}`)
-        // omit website domain since it already has a direct route
-        .filter(alternateName => alternateName != websiteDomain)
-
-      const redirectBucket = new s3.Bucket(this, `${apexDomain}-redirect-bucket`, {
-        bucketName: apexDomain,
-        websiteRedirect: {
-          hostName: websiteDomain,
-        }
-      })
-
-      const redirectCertificate = new acm.Certificate(this, `${apexDomain}-cert`, {
-        domainName: apexDomain,
-        subjectAlternativeNames: alternateNames,
-        validation: acm.CertificateValidation.fromDns(config.zone)
-      })
-
-      const redirectDistribution = new cloudfront.Distribution(this, `${apexDomain}-dist`, {
-        comment: `http/https redirection for ${apexDomain}`,
-        domainNames: [apexDomain, ...alternateNames],
-        certificate: redirectCertificate,
-        priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
-        logBucket: accessLogBucket,
-        logIncludesCookies: false,
-
-        defaultBehavior: {
-          origin: new origins.S3Origin(redirectBucket),
-          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        },
-      })
-
-      // route for apex domain name to redirect distribution
-      new route53.ARecord(this, `${apexDomain}-to-cf`, {
-        zone: config.zone,
-        recordName: apexDomain,
-        target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(redirectDistribution)),
-      })
-
-      // route for alternate domain names to redirect distribution
-      alternateNames.forEach(alternateName => {
-        new route53.ARecord(this, `${alternateName}-to-cf`, {
-          zone: config.zone,
-          recordName: alternateName,
-          target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(redirectDistribution)),
-        })
-      })
-
+    const redirectBucket = new s3.Bucket(this, `${apexDomain}-redirect-bucket`, {
+      bucketName: apexDomain,
+      websiteRedirect: {
+        hostName: targetDomain,
+      }
     })
 
-    // Other DNS records
-    domainConfigMap.forEach((config, apexDomain) => {
+    const redirectCertificate = new acm.Certificate(this, `${apexDomain}-cert`, {
+      domainName: apexDomain,
+      subjectAlternativeNames: alternateNames,
+      validation: acm.CertificateValidation.fromDns(zone)
+    })
 
-      // Email
-      new route53.MxRecord(this, `${apexDomain}-mx-gmail`, {
-        zone: config.zone,
-        values: [
-          { hostName: 'ASPMX.L.GOOGLE.COM.', priority: 1 },
-          { hostName: 'ALT1.ASPMX.L.GOOGLE.COM.', priority: 5 },
-          { hostName: 'ALT2.ASPMX.L.GOOGLE.COM.', priority: 5 },
-          { hostName: 'ALT3.ASPMX.L.GOOGLE.COM.', priority: 10 },
-          { hostName: 'ALT4.ASPMX.L.GOOGLE.COM.', priority: 10 },
-        ]
+    const redirectDistribution = new cloudfront.Distribution(this, `${apexDomain}-dist`, {
+      comment: `http/https redirection for ${apexDomain}`,
+      domainNames: [apexDomain, ...alternateNames],
+      certificate: redirectCertificate,
+      priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
+      logBucket: accessLogBucket,
+      logIncludesCookies: false,
+
+      defaultBehavior: {
+        origin: new origins.S3Origin(redirectBucket),
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+      },
+    })
+
+    // route for apex domain name to redirect distribution
+    new route53.ARecord(this, `${apexDomain}-to-cf`, {
+      zone: zone,
+      recordName: apexDomain,
+      target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(redirectDistribution)),
+    })
+
+    // route for alternate domain names to redirect distribution
+    alternateNames.forEach(alternateName => {
+      new route53.ARecord(this, `${alternateName}-to-cf`, {
+        zone: zone,
+        recordName: alternateName,
+        target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(redirectDistribution)),
       })
-
-      // TXT: configuration & verification
-      new route53.TxtRecord(this, `${apexDomain}-txt-spf`, {
-        zone: config.zone,
-        values: [
-          'v=spf1 include:_spf.google.com ~all',
-          ...config.additionalTxtRecords
-        ]
-      })
-
     })
   }
 }

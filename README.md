@@ -5,6 +5,7 @@ Contains the Infrastructure to host [www.chriswlucas.com](https://www.chriswluca
 
 ## TODO
 * separate into multiple stacks, possibly nested
+  * blocked on nested stacks diffing correctly
 * CD pipeline to deploy website content
 * backup origin bucket in a different region - mostly for style
 
