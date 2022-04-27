@@ -41,8 +41,9 @@ export class PersonalWebsiteStack extends Stack {
       )
 
     // Website hosting
-    const siteBucket = new s3.Bucket(this, `${primaryDomain}-origin-bucket`, {
-      bucketName: `${primaryDomain}-origin`,
+
+    const siteBucket = new s3.Bucket(this, `${websiteDomain}-origin-bucket`, {
+      bucketName: `${websiteDomain}`,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED
     })
