@@ -8,37 +8,44 @@ import { aws_cloudfront as cloudfront } from 'aws-cdk-lib';
 import { aws_cloudfront_origins as origins } from 'aws-cdk-lib';
 import { aws_certificatemanager as acm } from 'aws-cdk-lib';
 
-interface DomainZoneMap { [index: string]: route53.PublicHostedZone }
+interface DomainConfig {
+  readonly domain: string,
+  readonly additionalTxtRecords?: string[],
+}
+
+interface DomainProps {
+  readonly zone: route53.HostedZone,
+  readonly additionalTxtRecords: string[],
+}
+
+export interface PersonalWebsiteStackProps extends StackProps {
+  readonly websiteSubdomain: string,
+  readonly primaryDomainConfig: DomainConfig,
+  readonly secondaryDomainConfigs: DomainConfig[]
+}
 
 export class PersonalWebsiteStack extends Stack {
-  constructor(scope: Construct, id: string, props?: StackProps) {
+  constructor(scope: Construct, id: string, props: PersonalWebsiteStackProps) {
     super(scope, id, props);
 
+    const websiteDomain = `${props.websiteSubdomain}.${props.primaryDomainConfig.domain}`
 
-    const primaryDomain = "chriswlucas.com"
+    const domainConfigMap: Map<string, DomainProps> = new Map(
+      [props.primaryDomainConfig, ...props.secondaryDomainConfigs]
+        .map(config => [config.domain, {
+          zone: new route53.PublicHostedZone(this, config.domain, { zoneName: config.domain }),
+          additionalTxtRecords: config.additionalTxtRecords ?? [],
+        }])
+    )
 
-    const websiteSubdomain = 'www'
-    const websiteDomain = `${websiteSubdomain}.${primaryDomain}`
+    const primaryZone = domainConfigMap.get(props.primaryDomainConfig.domain)!.zone
 
-    const apexDomains = [primaryDomain, "chriswlucas.org", "chriswlucas.net"]
-
-    const verificationRecordsMap = new Map([
-      [ primaryDomain, [ 'keybase-site-verification=74xSzNnFzF37JGsYtlTgQ5ip70dKbUvAQLpHnaxiEp4' ] ],
-    ])
-
-    // Hosted Zones
-    const apexDomadinZoneMap = apexDomains
-      .reduce(
-        (map, apexDomain) => {
-
-          map[apexDomain] = new route53.PublicHostedZone(this, apexDomain, {
-            zoneName: apexDomain
-          });
-
-          return map
-        },
-        {} as DomainZoneMap,
-      )
+    const accessLogBucket = new s3.Bucket(this, `access-logs-bucket`, {
+      bucketName: `${id.toLowerCase()}-access-logs`,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      lifecycleRules: [{ expiration: Duration.days(30) }],
+    })
 
     // Website hosting
 
@@ -48,21 +55,14 @@ export class PersonalWebsiteStack extends Stack {
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED
     })
 
-    const accessLogBucket = new s3.Bucket(this, `${primaryDomain}-access-logs-bucket`, {
-      bucketName: `${primaryDomain}-access-logs`,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      lifecycleRules: [ { expiration: Duration.days(90) } ],
-    })
-
     const certificate = new acm.Certificate(this, `${websiteDomain}-cert`, {
       domainName: websiteDomain,
-      validation: acm.CertificateValidation.fromDns(apexDomadinZoneMap[primaryDomain])
+      validation: acm.CertificateValidation.fromDns(primaryZone)
     })
 
     const urlRewriteFn = new cloudfront.Function(this, "url-rewrite-fn", {
       comment: "re-writes urls for single page web apps.",
-      code: cloudfront.FunctionCode.fromFile({filePath: 'src/url-rewrite-single-page-apps.js'})
+      code: cloudfront.FunctionCode.fromFile({ filePath: 'src/url-rewrite-single-page-apps.js' })
     })
 
     const distribution = new cloudfront.Distribution(this, `${websiteDomain}-dist`, {
@@ -101,7 +101,7 @@ export class PersonalWebsiteStack extends Stack {
 
     // direct route for website
     new route53.ARecord(this, `${websiteDomain}-to-cf`, {
-      zone: apexDomadinZoneMap[primaryDomain],
+      zone: primaryZone,
       recordName: websiteDomain,
       target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(distribution)),
     })
@@ -115,9 +115,9 @@ export class PersonalWebsiteStack extends Stack {
     // alternate names also exist to alias various subdomains
     // to their redirecting bucket so that they are also redirected
     // to the website domain.
-    apexDomains.forEach(apexDomain => {
+    domainConfigMap.forEach((config, apexDomain) => {
 
-      const alternateNames = [websiteSubdomain]
+      const alternateNames = [props.websiteSubdomain]
         .map(subdomain => `${subdomain}.${apexDomain}`)
         // omit website domain since it already has a direct route
         .filter(alternateName => alternateName != websiteDomain)
@@ -132,7 +132,7 @@ export class PersonalWebsiteStack extends Stack {
       const redirectCertificate = new acm.Certificate(this, `${apexDomain}-cert`, {
         domainName: apexDomain,
         subjectAlternativeNames: alternateNames,
-        validation: acm.CertificateValidation.fromDns(apexDomadinZoneMap[apexDomain])
+        validation: acm.CertificateValidation.fromDns(config.zone)
       })
 
       const redirectDistribution = new cloudfront.Distribution(this, `${apexDomain}-dist`, {
@@ -142,7 +142,7 @@ export class PersonalWebsiteStack extends Stack {
         priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
         logBucket: accessLogBucket,
         logIncludesCookies: false,
-  
+
         defaultBehavior: {
           origin: new origins.S3Origin(redirectBucket),
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -151,7 +151,7 @@ export class PersonalWebsiteStack extends Stack {
 
       // route for apex domain name to redirect distribution
       new route53.ARecord(this, `${apexDomain}-to-cf`, {
-        zone: apexDomadinZoneMap[apexDomain],
+        zone: config.zone,
         recordName: apexDomain,
         target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(redirectDistribution)),
       })
@@ -159,7 +159,7 @@ export class PersonalWebsiteStack extends Stack {
       // route for alternate domain names to redirect distribution
       alternateNames.forEach(alternateName => {
         new route53.ARecord(this, `${alternateName}-to-cf`, {
-          zone: apexDomadinZoneMap[apexDomain],
+          zone: config.zone,
           recordName: alternateName,
           target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(redirectDistribution)),
         })
@@ -168,11 +168,11 @@ export class PersonalWebsiteStack extends Stack {
     })
 
     // Other DNS records
-    apexDomains.forEach(apexDomain => {
+    domainConfigMap.forEach((config, apexDomain) => {
 
       // Email
       new route53.MxRecord(this, `${apexDomain}-mx-gmail`, {
-        zone: apexDomadinZoneMap[apexDomain],
+        zone: config.zone,
         values: [
           { hostName: 'ASPMX.L.GOOGLE.COM.', priority: 1 },
           { hostName: 'ALT1.ASPMX.L.GOOGLE.COM.', priority: 5 },
@@ -184,10 +184,10 @@ export class PersonalWebsiteStack extends Stack {
 
       // TXT: configuration & verification
       new route53.TxtRecord(this, `${apexDomain}-txt-spf`, {
-        zone: apexDomadinZoneMap[apexDomain],
+        zone: config.zone,
         values: [
           'v=spf1 include:_spf.google.com ~all',
-          ...verificationRecordsMap.get(apexDomain) ?? []
+          ...config.additionalTxtRecords
         ]
       })
 
