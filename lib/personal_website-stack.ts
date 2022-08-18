@@ -7,10 +7,13 @@ import { aws_route53_targets as route53_targets } from 'aws-cdk-lib';
 import { aws_cloudfront as cloudfront } from 'aws-cdk-lib';
 import { aws_cloudfront_origins as origins } from 'aws-cdk-lib';
 import { aws_certificatemanager as acm } from 'aws-cdk-lib';
+import { CnameRecordProps, MxRecordProps, TxtRecordProps } from 'aws-cdk-lib/aws-route53';
 
 interface DomainConfig {
-  readonly domain: string,
-  readonly additionalTxtRecords?: string[],
+  readonly domain: string
+  readonly subdomainMxRecords?: {[key: string]: Omit<MxRecordProps, 'zone' | 'recordName'>}
+  readonly subdomainCnameRecords?: {[key: string]: Omit<CnameRecordProps, 'zone' | 'recordName'>}
+  readonly subdomainTxtRecords?: {[key: string]: Omit<TxtRecordProps, 'zone' | 'recordName'>}
 }
 
 export interface PersonalWebsiteStackProps extends StackProps {
@@ -25,17 +28,37 @@ export class PersonalWebsiteStack extends Stack {
 
     interface DomainProps {
       readonly zone: route53.HostedZone,
-      readonly additionalTxtRecords: string[],
+      readonly mxRecordsProps?: MxRecordProps[]
+      readonly cnameRecordsProps?: CnameRecordProps[]
+      readonly txtRecordsProps?: TxtRecordProps[]
     }
 
     const domainConfigMap: Map<string, DomainProps> = new Map(
       [props.primaryDomainConfig, ...props.secondaryDomainConfigs]
-        .map(config => [config.domain, {
+        .map(config => {
           // Creates hosted zones
-          zone: new route53.PublicHostedZone(this, config.domain, { zoneName: config.domain }),
+          let zone = new route53.PublicHostedZone(this, config.domain, { zoneName: config.domain })
 
-          additionalTxtRecords: config.additionalTxtRecords ?? [],
-        }])
+          function getRecordName(subdomain: string): string {
+            return subdomain ? `${subdomain}.${config.domain}` : config.domain
+          }
+
+          let domainProps: DomainProps = {
+            zone,
+
+            // Augment RecordData with missing zone and record Name to make RecordProps
+            mxRecordsProps: Object.entries(config.subdomainMxRecords || {}).map(
+              ([subdomain, recordData]) => ({ zone, recordName: getRecordName(subdomain), ...recordData })),
+
+            cnameRecordsProps: Object.entries(config.subdomainCnameRecords || {}).map(
+              ([subdomain, recordData]) => ({ zone, recordName: getRecordName(subdomain), ...recordData })),
+
+            txtRecordsProps: Object.entries(config.subdomainTxtRecords || {}).map(
+              ([subdomain, recordData]) => ({ zone, recordName: getRecordName(subdomain), ...recordData })),
+          }
+
+          return [config.domain, domainProps]
+        })
     )
 
     const websiteDomain = `${props.websiteSubdomain}.${props.primaryDomainConfig.domain}`
@@ -62,27 +85,17 @@ export class PersonalWebsiteStack extends Stack {
       // Configure necessary redirection
       this.createDomainRedirectInfra(apexDomain, redirectingSubdomains, websiteDomain, config.zone, accessLogBucket)
 
-      // Configure email records
-      new route53.MxRecord(this, `${apexDomain}-mx-gmail`, {
-        zone: config.zone,
-        values: [
-          { hostName: 'ASPMX.L.GOOGLE.COM.', priority: 1 },
-          { hostName: 'ALT1.ASPMX.L.GOOGLE.COM.', priority: 5 },
-          { hostName: 'ALT2.ASPMX.L.GOOGLE.COM.', priority: 5 },
-          { hostName: 'ALT3.ASPMX.L.GOOGLE.COM.', priority: 10 },
-          { hostName: 'ALT4.ASPMX.L.GOOGLE.COM.', priority: 10 },
-        ]
-      })
-
-      // Configure various TXT records
-      new route53.TxtRecord(this, `${apexDomain}-txt-spf`, {
-        zone: config.zone,
-        values: [
-          'v=spf1 include:_spf.google.com ~all', // for Gmail
-          ...config.additionalTxtRecords,
-        ]
-      })
-
+      // Creates extra DNS records for the domain
+      // TODO: ugly
+      config.mxRecordsProps?.forEach(recordProps =>
+        new route53.MxRecord(this, `${recordProps.recordName || apexDomain}-mx`, recordProps)
+      )
+      config.cnameRecordsProps?.forEach(recordProps =>
+        new route53.CnameRecord(this, `${recordProps.recordName || apexDomain}-cname`, recordProps)
+      )
+      config.txtRecordsProps?.forEach(recordProps =>
+        new route53.TxtRecord(this, `${recordProps.recordName || apexDomain}-txt`, recordProps)
+      )
     })
   }
 
