@@ -9,7 +9,7 @@ const iCloudMxValues = [
   { hostName: 'mx02.mail.icloud.com.', priority: 10 },
 ]
 
-const iCloudSpfValue = 'v=spf1 include:_spf.google.com ~all'
+const iCloudSpfValue = 'v=spf1 include:icloud.com ~all'
 
 new PersonalWebsiteStack(app, 'PersonalWebsiteStack', {
   env: {
