@@ -36,29 +36,9 @@ new PersonalWebsiteStack(app, 'PersonalWebsiteStack', {
   secondaryDomainConfigs: [
     {
       domain: 'chriswlucas.org',
-      subdomainMxRecords: {
-        '': { values: gmailMxValues },
-      },
-      subdomainTxtRecords: {
-        '': {
-          values: [
-            gmailSpfValue,
-          ]
-        },
-      },
     },
     {
       domain: 'chriswlucas.net',
-      subdomainMxRecords: {
-        '': { values: gmailMxValues },
-      },
-      subdomainTxtRecords: {
-        '': {
-          values: [
-            gmailSpfValue,
-          ]
-        },
-      },
     }
   ],
 });
