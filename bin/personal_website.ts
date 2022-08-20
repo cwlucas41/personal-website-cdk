@@ -4,15 +4,12 @@ import { PersonalWebsiteStack } from '../lib/personal_website-stack';
 
 const app = new App();
 
-const gmailMxValues = [
-  { hostName: 'ASPMX.L.GOOGLE.COM.', priority: 1 },
-  { hostName: 'ALT1.ASPMX.L.GOOGLE.COM.', priority: 5 },
-  { hostName: 'ALT2.ASPMX.L.GOOGLE.COM.', priority: 5 },
-  { hostName: 'ALT3.ASPMX.L.GOOGLE.COM.', priority: 10 },
-  { hostName: 'ALT4.ASPMX.L.GOOGLE.COM.', priority: 10 }
+const iCloudMxValues = [
+  { hostName: 'mx01.mail.icloud.com.', priority: 10 },
+  { hostName: 'mx02.mail.icloud.com.', priority: 10 },
 ]
 
-const gmailSpfValue = 'v=spf1 include:_spf.google.com ~all'
+const iCloudSpfValue = 'v=spf1 include:_spf.google.com ~all'
 
 new PersonalWebsiteStack(app, 'PersonalWebsiteStack', {
   env: {
@@ -22,12 +19,16 @@ new PersonalWebsiteStack(app, 'PersonalWebsiteStack', {
   primaryDomainConfig: {
     domain: 'chriswlucas.com',
     subdomainMxRecords: {
-      '': { values: gmailMxValues },
+      '': { values: iCloudMxValues },
+    },
+    subdomainCnameRecords: {
+      'sig1._domainkey': { domainName: 'sig1.dkim.chriswlucas.com.at.icloudmailadmin.com.' },
     },
     subdomainTxtRecords: {
       '': {
         values: [
-          gmailSpfValue,
+          iCloudSpfValue,
+          'apple-domain=DdleKqlDev7mc5xo',
           'keybase-site-verification=74xSzNnFzF37JGsYtlTgQ5ip70dKbUvAQLpHnaxiEp4',
         ]
       },
