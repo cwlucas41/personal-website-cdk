@@ -35,6 +35,7 @@ new PersonalWebsiteStack(app, 'PersonalWebsiteStack', {
           iCloudSpfValue,
           'apple-domain=DdleKqlDev7mc5xo',
           'keybase-site-verification=74xSzNnFzF37JGsYtlTgQ5ip70dKbUvAQLpHnaxiEp4',
+          'google-site-verification=-y6CXohbao4xigEBlFXanLydR90TZ1mO5gFMBzVtBsY',
         ],
         ttl: Duration.hours(1),
       },
@@ -43,9 +44,21 @@ new PersonalWebsiteStack(app, 'PersonalWebsiteStack', {
   secondaryDomainConfigs: [
     {
       domain: 'chriswlucas.org',
+      subdomainTxtRecords: {
+        '': {
+          values: ['google-site-verification=eum67Zs46nv_NLwhZ0PV6aPdTIoJIv2cjnrd3t6VO5o'],
+          ttl: Duration.hours(1),
+        },
+      },
     },
     {
       domain: 'chriswlucas.net',
+      subdomainTxtRecords: {
+        '': {
+          values: ['google-site-verification=oenFzY8fj0pDqA1DebjDT38z49YkQjccTzaXAXtN1A8'],
+          ttl: Duration.hours(1),
+        },
+      },
     }
   ],
 });
