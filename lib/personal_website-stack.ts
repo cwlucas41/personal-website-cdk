@@ -10,87 +10,26 @@ import { aws_cloudfront_origins as origins } from 'aws-cdk-lib';
 import { aws_certificatemanager as acm } from 'aws-cdk-lib';
 import { CnameRecordProps, MxRecordProps, TxtRecordProps } from 'aws-cdk-lib/aws-route53';
 
-interface DomainConfig {
-  readonly domain: string
-  readonly subdomainMxRecords?: {[key: string]: Omit<MxRecordProps, 'zone' | 'recordName'>}
-  readonly subdomainCnameRecords?: {[key: string]: Omit<CnameRecordProps, 'zone' | 'recordName'>}
-  readonly subdomainTxtRecords?: {[key: string]: Omit<TxtRecordProps, 'zone' | 'recordName'>}
+export interface DomainRecords {
+  readonly MxRecords?: Omit<MxRecordProps, 'zone'>[]
+  readonly CnameRecords?: Omit<CnameRecordProps, 'zone'>[]
+  readonly TxtRecords?: Omit<TxtRecordProps, 'zone'>[]
 }
 
 export interface PersonalWebsiteStackProps extends StackProps {
   readonly websiteSubdomain: string,
   readonly homeSubdomain: string,
-  readonly primaryDomainConfig: DomainConfig,
-  readonly secondaryDomainConfigs: DomainConfig[]
+  readonly email: string,
+  readonly primaryDomain: string,
+  readonly domainConfigs: {[key: string]: DomainRecords},
 }
 
 export class PersonalWebsiteStack extends Stack {
   constructor(scope: Construct, id: string, props: PersonalWebsiteStackProps) {
     super(scope, id, props);
 
-    interface DomainProps {
-      readonly zone: route53.HostedZone,
-      readonly mxRecordsProps?: MxRecordProps[]
-      readonly cnameRecordsProps?: CnameRecordProps[]
-      readonly txtRecordsProps?: TxtRecordProps[]
-    }
-
-    const domainConfigMap: Map<string, DomainProps> = new Map(
-      [props.primaryDomainConfig, ...props.secondaryDomainConfigs]
-        .map(config => {
-          // Creates hosted zones
-          let zone = new route53.PublicHostedZone(this, config.domain, { zoneName: config.domain })
-
-          function getRecordName(subdomain: string): string {
-            return subdomain ? `${subdomain}.${config.domain}` : config.domain
-          }
-
-          let domainProps: DomainProps = {
-            zone,
-
-            // Augment RecordData with missing zone and record Name to make RecordProps
-            mxRecordsProps: Object.entries(config.subdomainMxRecords || {}).map(
-              ([subdomain, recordData]) => ({ zone, recordName: getRecordName(subdomain), ...recordData })),
-
-            cnameRecordsProps: Object.entries(config.subdomainCnameRecords || {}).map(
-              ([subdomain, recordData]) => ({ zone, recordName: getRecordName(subdomain), ...recordData })),
-
-            txtRecordsProps: Object.entries(config.subdomainTxtRecords || {}).map(
-              ([subdomain, recordData]) => ({ zone, recordName: getRecordName(subdomain), ...recordData })),
-          }
-
-          return [config.domain, domainProps]
-        })
-    )
-
-    // DNS RECORD SECTION
-    // Creates requested DNS records for each domain
-    domainConfigMap.forEach((config, apexDomain) => {
-      config.mxRecordsProps?.forEach(recordProps =>
-        new route53.MxRecord(this, `${recordProps.recordName || apexDomain}-mx`, recordProps)
-      )
-      config.cnameRecordsProps?.forEach(recordProps =>
-        new route53.CnameRecord(this, `${recordProps.recordName || apexDomain}-cname`, recordProps)
-      )
-      config.txtRecordsProps?.forEach(recordProps =>
-        new route53.TxtRecord(this, `${recordProps.recordName || apexDomain}-txt`, recordProps)
-      )
-    })
-
-    // HOME EMAIL SECTION
-    const homeDomain = `${props.homeSubdomain}.${props.primaryDomainConfig.domain}`
-    // const homeZone = new route53.PublicHostedZone(this, homeDomain, { zoneName: homeDomain })
-    const fromIdentity = new ses.EmailIdentity(this, `Identity-${homeDomain}`, {
-      identity: ses.Identity.publicHostedZone(domainConfigMap.get(props.primaryDomainConfig.domain)!.zone),
-      mailFromDomain: homeDomain,
-    })
-    const toIdentity = new ses.EmailIdentity(this, 'Identity-chris@chriswlucas.com', {
-      identity: ses.Identity.email('chris@chriswlucas.com')
-    })
-
-    // WEBSITE SECTION
-    const websiteDomain = `${props.websiteSubdomain}.${props.primaryDomainConfig.domain}`
-    const websiteZone = domainConfigMap.get(props.primaryDomainConfig.domain)!.zone
+    const websiteDomain = this.domainJoin([props.websiteSubdomain,props.primaryDomain])
+    const homeDomain = this.domainJoin([props.homeSubdomain,props.primaryDomain])
 
     // Logging bucket retains only for limited number of days
     const accessLogBucket = new s3.Bucket(this, `access-logs-bucket`, {
@@ -100,22 +39,60 @@ export class PersonalWebsiteStack extends Stack {
       lifecycleRules: [{ expiration: Duration.days(30) }],
     })
 
-    // Site hosting
-    this.createWebHostingInfra(websiteDomain, websiteZone, accessLogBucket)
+    // Send emails to self
+    new ses.EmailIdentity(this, `Identity-${props.email}`, {
+      identity: ses.Identity.email(props.email)
+    })
 
-    // Other domain website redirection
-    domainConfigMap.forEach((config, apexDomain) => {
-      // primary domain doesn't need website subdomain redirection
-      const redirectingSubdomains = apexDomain != props.primaryDomainConfig.domain ? [props.websiteSubdomain] : []
+    Object.entries(props.domainConfigs).map(([domain, records]) => {
+      // Creates hosted zones
+      let zone = new route53.PublicHostedZone(this, domain, { zoneName: domain })
 
-      // Configure necessary redirection
-      this.createDomainRedirectInfra(apexDomain, redirectingSubdomains, websiteDomain, config.zone, accessLogBucket)
+      // Creates requested DNS records for each domain
+      records.MxRecords?.forEach(recordProps =>
+        new route53.MxRecord(this, `${this.domainJoin([recordProps.recordName, domain])}-mx`, { zone, ...recordProps })
+      )
+      records.CnameRecords?.forEach(recordProps =>
+        new route53.CnameRecord(this, `${this.domainJoin([recordProps.recordName, domain])}-cname`, { zone, ...recordProps })
+      )
+      records.TxtRecords?.forEach(recordProps =>
+        new route53.TxtRecord(this, `${this.domainJoin([recordProps.recordName, domain])}-txt`, { zone, ...recordProps })
+      )
+
+
+      if (domain == props.primaryDomain) {
+
+        // Website hosting
+        this.createWebHostingInfra(zone, websiteDomain, accessLogBucket)
+
+        // Website redirection for domain only as website subdomain is used above 
+        this.createDomainRedirectInfra(zone, domain, websiteDomain, accessLogBucket)
+
+        // Home machine email infra
+        this.createFromEmailInfra(zone, homeDomain)
+
+      } else {
+
+        // Website redirection for domain and website subdomain to primary domain website subdomain
+        this.createDomainRedirectInfra(zone, domain, websiteDomain, accessLogBucket, [props.websiteSubdomain])
+
+      }
+    })
+  }
+
+  createFromEmailInfra(
+    zone: route53.HostedZone,
+    fromDomain: string,
+  ) {
+    new ses.EmailIdentity(this, `Identity-${fromDomain}`, {
+      identity: ses.Identity.publicHostedZone(zone),
+      mailFromDomain: fromDomain,
     })
   }
 
   createWebHostingInfra(
-    websiteDomain: string,
     zone: route53.HostedZone,
+    websiteDomain: string,
     accessLogBucket: s3.Bucket,
   ) {
     const siteBucket = new s3.Bucket(this, `${websiteDomain}-origin-bucket`, {
@@ -186,30 +163,30 @@ export class PersonalWebsiteStack extends Stack {
   // to their redirecting bucket so that they are also redirected
   // to the website domain.
   createDomainRedirectInfra(
-    apexDomain: string,
-    redirectingSubdomains: string[],
-    targetDomain: string,
     zone: route53.HostedZone,
+    domain: string,
+    targetDomain: string,
     accessLogBucket: s3.Bucket,
+    redirectingSubdomains: string[] = [],
   ) {
-    const alternateNames = redirectingSubdomains.map(subdomain => `${subdomain}.${apexDomain}`)
+    const alternateNames = redirectingSubdomains?.map(subdomain => this.domainJoin([subdomain, domain]))
 
-    const redirectBucket = new s3.Bucket(this, `${apexDomain}-redirect-bucket`, {
-      bucketName: apexDomain,
+    const redirectBucket = new s3.Bucket(this, `${domain}-redirect-bucket`, {
+      bucketName: domain,
       websiteRedirect: {
         hostName: targetDomain,
       }
     })
 
-    const redirectCertificate = new acm.Certificate(this, `${apexDomain}-cert`, {
-      domainName: apexDomain,
+    const redirectCertificate = new acm.Certificate(this, `${domain}-cert`, {
+      domainName: domain,
       subjectAlternativeNames: alternateNames,
       validation: acm.CertificateValidation.fromDns(zone)
     })
 
-    const redirectDistribution = new cloudfront.Distribution(this, `${apexDomain}-dist`, {
-      comment: `http/https redirection for ${apexDomain}`,
-      domainNames: [apexDomain, ...alternateNames],
+    const redirectDistribution = new cloudfront.Distribution(this, `${domain}-dist`, {
+      comment: `http/https redirection for ${domain}`,
+      domainNames: [domain, ...alternateNames],
       certificate: redirectCertificate,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       logBucket: accessLogBucket,
@@ -221,20 +198,24 @@ export class PersonalWebsiteStack extends Stack {
       },
     })
 
-    // route for apex domain name to redirect distribution
-    new route53.ARecord(this, `${apexDomain}-to-cf`, {
+    // route for domain name to redirect distribution
+    new route53.ARecord(this, `${domain}-to-cf`, {
       zone: zone,
-      recordName: apexDomain,
+      recordName: domain,
       target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(redirectDistribution)),
     })
 
     // route for alternate domain names to redirect distribution
-    alternateNames.forEach(alternateName => {
+    alternateNames?.forEach(alternateName => {
       new route53.ARecord(this, `${alternateName}-to-cf`, {
         zone: zone,
         recordName: alternateName,
         target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(redirectDistribution)),
       })
     })
+  }
+
+  domainJoin(parts: (string | undefined)[]) {
+    return parts.filter(n => n).join('.')
   }
 }

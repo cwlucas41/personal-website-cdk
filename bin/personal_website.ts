@@ -16,50 +16,50 @@ new PersonalWebsiteStack(app, 'PersonalWebsiteStack', {
   },
   websiteSubdomain: 'www',
   homeSubdomain: 'home',
-  primaryDomainConfig: {
-    domain: 'chriswlucas.com',
-    subdomainMxRecords: {
-      '': {
-        values: iCloudMxValues,
-        ttl: Duration.days(1),
-      },
+  email: 'chris@chriswlucas.com',
+  primaryDomain: 'chriswlucas.com',
+  domainConfigs: {
+    'chriswlucas.com': {
+      MxRecords: [
+        {
+          values: iCloudMxValues,
+          ttl: Duration.days(1),
+        }
+      ],
+      CnameRecords: [
+        {
+          recordName: 'sig1._domainkey',
+          domainName: 'sig1.dkim.chriswlucas.com.at.icloudmailadmin.com.',
+          ttl: Duration.days(1),
+        },
+      ],
+      TxtRecords: [
+        {
+          values: [
+            iCloudSpfValue,
+            'apple-domain=DdleKqlDev7mc5xo',
+            'keybase-site-verification=74xSzNnFzF37JGsYtlTgQ5ip70dKbUvAQLpHnaxiEp4',
+            'google-site-verification=-y6CXohbao4xigEBlFXanLydR90TZ1mO5gFMBzVtBsY',
+          ],
+          ttl: Duration.hours(1),
+        },
+      ],
     },
-    subdomainCnameRecords: {
-      'sig1._domainkey': {
-        domainName: 'sig1.dkim.chriswlucas.com.at.icloudmailadmin.com.',
-        ttl: Duration.days(1),
-      },
-    },
-    subdomainTxtRecords: {
-      '': {
-        values: [
-          iCloudSpfValue,
-          'apple-domain=DdleKqlDev7mc5xo',
-          'keybase-site-verification=74xSzNnFzF37JGsYtlTgQ5ip70dKbUvAQLpHnaxiEp4',
-          'google-site-verification=-y6CXohbao4xigEBlFXanLydR90TZ1mO5gFMBzVtBsY',
-        ],
-        ttl: Duration.hours(1),
-      },
-    },
-  },
-  secondaryDomainConfigs: [
-    {
-      domain: 'chriswlucas.org',
-      subdomainTxtRecords: {
-        '': {
+    'chriswlucas.org': {
+      TxtRecords: [
+        {
           values: ['google-site-verification=eum67Zs46nv_NLwhZ0PV6aPdTIoJIv2cjnrd3t6VO5o'],
           ttl: Duration.hours(1),
         },
-      },
+      ],
     },
-    {
-      domain: 'chriswlucas.net',
-      subdomainTxtRecords: {
-        '': {
+    'chriswlucas.net': {
+      TxtRecords: [
+        {
           values: ['google-site-verification=oenFzY8fj0pDqA1DebjDT38z49YkQjccTzaXAXtN1A8'],
           ttl: Duration.hours(1),
         },
-      },
-    }
-  ],
+      ],
+    },
+  },
 });
