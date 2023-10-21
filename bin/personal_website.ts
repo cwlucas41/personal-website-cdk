@@ -15,6 +15,7 @@ new PersonalWebsiteStack(app, 'PersonalWebsiteStack', {
     region: 'us-east-1'
   },
   websiteSubdomain: 'www',
+  homeSubdomain: 'home',
   primaryDomainConfig: {
     domain: 'chriswlucas.com',
     subdomainMxRecords: {

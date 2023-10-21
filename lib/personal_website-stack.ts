@@ -2,6 +2,7 @@ import { Construct } from 'constructs';
 import { Stack, StackProps, Duration } from 'aws-cdk-lib';
 
 import { aws_s3 as s3 } from 'aws-cdk-lib';
+import { aws_ses as ses } from 'aws-cdk-lib';
 import { aws_route53 as route53 } from 'aws-cdk-lib';
 import { aws_route53_targets as route53_targets } from 'aws-cdk-lib';
 import { aws_cloudfront as cloudfront } from 'aws-cdk-lib';
@@ -18,6 +19,7 @@ interface DomainConfig {
 
 export interface PersonalWebsiteStackProps extends StackProps {
   readonly websiteSubdomain: string,
+  readonly homeSubdomain: string,
   readonly primaryDomainConfig: DomainConfig,
   readonly secondaryDomainConfigs: DomainConfig[]
 }
@@ -61,6 +63,32 @@ export class PersonalWebsiteStack extends Stack {
         })
     )
 
+    // DNS RECORD SECTION
+    // Creates requested DNS records for each domain
+    domainConfigMap.forEach((config, apexDomain) => {
+      config.mxRecordsProps?.forEach(recordProps =>
+        new route53.MxRecord(this, `${recordProps.recordName || apexDomain}-mx`, recordProps)
+      )
+      config.cnameRecordsProps?.forEach(recordProps =>
+        new route53.CnameRecord(this, `${recordProps.recordName || apexDomain}-cname`, recordProps)
+      )
+      config.txtRecordsProps?.forEach(recordProps =>
+        new route53.TxtRecord(this, `${recordProps.recordName || apexDomain}-txt`, recordProps)
+      )
+    })
+
+    // HOME EMAIL SECTION
+    const homeDomain = `${props.homeSubdomain}.${props.primaryDomainConfig.domain}`
+    // const homeZone = new route53.PublicHostedZone(this, homeDomain, { zoneName: homeDomain })
+    const fromIdentity = new ses.EmailIdentity(this, `Identity-${homeDomain}`, {
+      identity: ses.Identity.publicHostedZone(domainConfigMap.get(props.primaryDomainConfig.domain)!.zone),
+      mailFromDomain: homeDomain,
+    })
+    const toIdentity = new ses.EmailIdentity(this, 'Identity-chris@chriswlucas.com', {
+      identity: ses.Identity.email('chris@chriswlucas.com')
+    })
+
+    // WEBSITE SECTION
     const websiteDomain = `${props.websiteSubdomain}.${props.primaryDomainConfig.domain}`
     const websiteZone = domainConfigMap.get(props.primaryDomainConfig.domain)!.zone
 
@@ -72,30 +100,16 @@ export class PersonalWebsiteStack extends Stack {
       lifecycleRules: [{ expiration: Duration.days(30) }],
     })
 
-    // Website hosting
+    // Site hosting
     this.createWebHostingInfra(websiteDomain, websiteZone, accessLogBucket)
 
-
-    // for each domain
+    // Other domain website redirection
     domainConfigMap.forEach((config, apexDomain) => {
-
       // primary domain doesn't need website subdomain redirection
       const redirectingSubdomains = apexDomain != props.primaryDomainConfig.domain ? [props.websiteSubdomain] : []
 
       // Configure necessary redirection
       this.createDomainRedirectInfra(apexDomain, redirectingSubdomains, websiteDomain, config.zone, accessLogBucket)
-
-      // Creates extra DNS records for the domain
-      // TODO: ugly
-      config.mxRecordsProps?.forEach(recordProps =>
-        new route53.MxRecord(this, `${recordProps.recordName || apexDomain}-mx`, recordProps)
-      )
-      config.cnameRecordsProps?.forEach(recordProps =>
-        new route53.CnameRecord(this, `${recordProps.recordName || apexDomain}-cname`, recordProps)
-      )
-      config.txtRecordsProps?.forEach(recordProps =>
-        new route53.TxtRecord(this, `${recordProps.recordName || apexDomain}-txt`, recordProps)
-      )
     })
   }
 
