@@ -1,25 +1,28 @@
 import { Construct } from 'constructs';
 import { Stack, StackProps, Duration } from 'aws-cdk-lib';
 
-import { aws_s3 as s3 } from 'aws-cdk-lib';
-import { aws_ses as ses } from 'aws-cdk-lib';
-import { aws_route53 as route53 } from 'aws-cdk-lib';
-import { aws_route53_targets as route53_targets } from 'aws-cdk-lib';
-import { aws_cloudfront as cloudfront } from 'aws-cdk-lib';
-import { aws_cloudfront_origins as origins } from 'aws-cdk-lib';
-import { aws_certificatemanager as acm } from 'aws-cdk-lib';
-import { CnameRecordProps, MxRecordProps, TxtRecordProps } from 'aws-cdk-lib/aws-route53';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as ses from 'aws-cdk-lib/aws-ses';
+import * as route53 from 'aws-cdk-lib/aws-route53';
+import * as route53_targets from 'aws-cdk-lib/aws-route53-targets';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 
 export interface DomainRecords {
-  readonly MxRecords?: Omit<MxRecordProps, 'zone'>[]
-  readonly CnameRecords?: Omit<CnameRecordProps, 'zone'>[]
-  readonly TxtRecords?: Omit<TxtRecordProps, 'zone'>[]
+  readonly MxRecords?: Omit<route53.MxRecordProps, 'zone'>[]
+  readonly CnameRecords?: Omit<route53.CnameRecordProps, 'zone'>[]
+  readonly TxtRecords?: Omit<route53.TxtRecordProps, 'zone'>[]
 }
 
 export interface PersonalWebsiteStackProps extends StackProps {
   readonly websiteSubdomain: string,
   readonly homeSubdomain: string,
-  readonly email: string,
+  readonly alarmEmail: string,
   readonly primaryDomain: string,
   readonly domainConfigs: {[key: string]: DomainRecords},
 }
@@ -39,10 +42,75 @@ export class PersonalWebsiteStack extends Stack {
       lifecycleRules: [{ expiration: Duration.days(30) }],
     })
 
-    // Send emails to self
-    new ses.EmailIdentity(this, `Identity-${props.email}`, {
-      identity: ses.Identity.email(props.email)
-    })
+    const alarmTopic = new sns.Topic(this, 'AlarmTopic', {
+      displayName: 'Personal Website Alarms'
+    });
+
+    alarmTopic.addSubscription(new subscriptions.EmailSubscription(props.alarmEmail));
+
+    const alarmConfigs: cloudwatch.AlarmProps[] = [
+      {
+        alarmName: 'SES Sends',
+        alarmDescription: `high number of sent emails`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 100,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/SES',
+          metricName: 'Send',
+          period: Duration.days(1),
+          statistic: 'sum',
+        })
+      },
+      {
+        alarmName: 'SES Rejects',
+        alarmDescription: `high number of rejected emails`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 0,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/SES',
+          metricName: 'Reject',
+          period: Duration.minutes(5),
+          statistic: 'sum',
+        })
+      },
+      {
+        alarmName: 'SES Bounce Rate',
+        alarmDescription: `high rate of email bounces`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 0.05,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/SES',
+          metricName: 'Reputation.BounceRate',
+          period: Duration.minutes(5),
+          statistic: 'avg',
+        })
+      },
+      {
+        alarmName: 'SES Complaint Rate',
+        alarmDescription: `high rate of email complaints`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 0.001,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/SES',
+          metricName: 'Reputation.Complaint',
+          period: Duration.minutes(5),
+          statistic: 'avg',
+        })
+      },
+    ]
+
+    alarmConfigs.forEach((props) => {
+      new cloudwatch.Alarm(this, `${props.alarmName} Alarm`, props).addAlarmAction(new cw_actions.SnsAction(alarmTopic));
+    });
+
 
     Object.entries(props.domainConfigs).map(([domain, records]) => {
       // Creates hosted zones
@@ -82,11 +150,33 @@ export class PersonalWebsiteStack extends Stack {
 
   createFromEmailInfra(
     zone: route53.HostedZone,
-    fromDomain: string,
+    domain: string,
   ) {
-    new ses.EmailIdentity(this, `Identity-${fromDomain}`, {
-      identity: ses.Identity.publicHostedZone(zone),
+    const fromDomain = this.domainJoin(['mail', domain])
+
+    const domainIdentity = new ses.EmailIdentity(this, `Email-${domain}`, {
+      identity: ses.Identity.domain(domain),
       mailFromDomain: fromDomain,
+    })
+
+    domainIdentity.dkimRecords.forEach((dkimRecord, index) =>
+      new route53.CnameRecord(this, `${domain}-dkim${index+1}-cname`, {
+        zone,
+        recordName: `${dkimRecord.name}.`,
+        domainName: dkimRecord.value,
+      })
+    )
+
+    new route53.TxtRecord(this, `${domain}-txt`, {
+      zone,
+      recordName: `${fromDomain}.`,
+      values: [ 'v=spf1 include:amazonses.com ~all' ]
+    })
+
+    new route53.MxRecord(this, `${domain}-mx`, {
+      zone,
+      recordName: `${fromDomain}.`,
+      values: [ { priority: 10, hostName: `feedback-smtp.${Stack.of(this).region}.amazonses.com` }]
     })
   }
 
