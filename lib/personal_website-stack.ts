@@ -224,7 +224,7 @@ export class PersonalWebsiteStack extends Stack {
       logIncludesCookies: false,
 
       defaultBehavior: {
-        origin: new origins.S3Origin(siteBucket),
+        origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
 
         functionAssociations: [{
@@ -238,13 +238,11 @@ export class PersonalWebsiteStack extends Stack {
           httpStatus: 403,
           responseHttpStatus: 404,
           responsePagePath: '/404.html',
-          ttl: Duration.minutes(30)
         },
         {
           httpStatus: 404,
           responseHttpStatus: 404,
           responsePagePath: '/404.html',
-          ttl: Duration.minutes(30)
         },
       ],
     })
@@ -304,7 +302,7 @@ export class PersonalWebsiteStack extends Stack {
       logIncludesCookies: false,
 
       defaultBehavior: {
-        origin: new origins.S3Origin(redirectBucket),
+        origin: new origins.S3StaticWebsiteOrigin(redirectBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
       },
     })
