@@ -137,7 +137,7 @@ export class PersonalWebsiteStack extends Stack {
         this.createDomainRedirectInfra(zone, domain, websiteDomain, accessLogBucket)
 
         // Home machine email infra
-        this.createFromEmailInfra(zone, homeDomain)
+        this.createFromEmailInfra(zone, homeDomain, `mailto:postmaster@${props.primaryDomain}`)
 
       } else {
 
@@ -151,6 +151,7 @@ export class PersonalWebsiteStack extends Stack {
   createFromEmailInfra(
     zone: route53.HostedZone,
     domain: string,
+    dmarc_rua: string
   ) {
     const fromDomain = this.domainJoin(['mail', domain])
 
@@ -167,10 +168,16 @@ export class PersonalWebsiteStack extends Stack {
       })
     )
 
-    new route53.TxtRecord(this, `${domain}-txt`, {
+    new route53.TxtRecord(this, `${fromDomain}-spf`, {
       zone,
       recordName: `${fromDomain}.`,
       values: [ 'v=spf1 include:amazonses.com ~all' ]
+    })
+
+    new route53.TxtRecord(this, `${domain}-dmarc`, {
+      zone,
+      recordName: `_dmarc.${domain}.`,
+      values: [ `v=DMARC1;p=quarantine;rua=${dmarc_rua}` ]
     })
 
     new route53.MxRecord(this, `${domain}-mx`, {
@@ -195,6 +202,13 @@ export class PersonalWebsiteStack extends Stack {
       domainName: websiteDomain,
       validation: acm.CertificateValidation.fromDns(zone)
     })
+
+    certificate.metricDaysToExpiry().createAlarm(this, `${websiteDomain}-cert Expiry Alarm`, {
+      alarmName: `${websiteDomain}-cert Expiry Alarm`,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      threshold: 45, // Automatic rotation happens between 60 and 45 days before expiry
+    });
 
     const urlRewriteFn = new cloudfront.Function(this, "url-rewrite-fn", {
       comment: "re-writes urls for single page web apps.",
@@ -273,6 +287,13 @@ export class PersonalWebsiteStack extends Stack {
       subjectAlternativeNames: alternateNames,
       validation: acm.CertificateValidation.fromDns(zone)
     })
+
+    redirectCertificate.metricDaysToExpiry().createAlarm(this, `${domain}-cert Expiry Alarm`, {
+      alarmName: `${domain}-cert Expiry Alarm`,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      threshold: 45, // Automatic rotation happens between 60 and 45 days before expiry
+    });
 
     const redirectDistribution = new cloudfront.Distribution(this, `${domain}-dist`, {
       comment: `http/https redirection for ${domain}`,
