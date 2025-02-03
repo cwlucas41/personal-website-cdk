@@ -98,13 +98,25 @@ export class PersonalWebsiteStack extends Stack {
   createFromEmailInfra(
     zone: route53.HostedZone,
     domain: string,
-    dmarc_rua: string
+    dmarcRua: string
   ) {
     const fromDomain = this.domainJoin(['mail', domain])
 
     const domainIdentity = new ses.EmailIdentity(this, `Email-${domain}`, {
       identity: ses.Identity.domain(domain),
       mailFromDomain: fromDomain,
+    })
+
+    new route53.MxRecord(this, `${fromDomain}-mx`, {
+      zone,
+      recordName: `${fromDomain}.`,
+      values: [ { priority: 10, hostName: `feedback-smtp.${Stack.of(this).region}.amazonses.com` }]
+    })
+
+    new route53.TxtRecord(this, `${fromDomain}-spf`, {
+      zone,
+      recordName: `${fromDomain}.`,
+      values: [ 'v=spf1 include:amazonses.com ~all' ]
     })
 
     domainIdentity.dkimRecords.forEach((dkimRecord, index) =>
@@ -115,22 +127,10 @@ export class PersonalWebsiteStack extends Stack {
       })
     )
 
-    new route53.TxtRecord(this, `${fromDomain}-spf`, {
-      zone,
-      recordName: `${fromDomain}.`,
-      values: [ 'v=spf1 include:amazonses.com ~all' ]
-    })
-
     new route53.TxtRecord(this, `${domain}-dmarc`, {
       zone,
       recordName: `_dmarc.${domain}.`,
-      values: [ `v=DMARC1;p=quarantine;rua=${dmarc_rua}` ]
-    })
-
-    new route53.MxRecord(this, `${domain}-mx`, {
-      zone,
-      recordName: `${fromDomain}.`,
-      values: [ { priority: 10, hostName: `feedback-smtp.${Stack.of(this).region}.amazonses.com` }]
+      values: [ `v=DMARC1;p=quarantine;rua=${dmarcRua}` ]
     })
   }
 
