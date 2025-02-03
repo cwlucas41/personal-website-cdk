@@ -130,7 +130,7 @@ export class PersonalWebsiteStack extends Stack {
     new route53.TxtRecord(this, `${domain}-dmarc`, {
       zone,
       recordName: `_dmarc.${domain}.`,
-      values: [ `v=DMARC1;p=quarantine;rua=${dmarcRua}` ]
+      values: [ `v=DMARC1;p=reject;rua=${dmarcRua}` ]
     })
   }
 
