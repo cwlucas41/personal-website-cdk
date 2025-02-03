@@ -23,11 +23,15 @@ export interface PersonalWebsiteStackProps extends StackProps {
   readonly websiteSubdomain: string,
   readonly homeSubdomain: string,
   readonly alarmEmail: string,
+  readonly postmasterEmail: string,
   readonly primaryDomain: string,
   readonly domainConfigs: {[key: string]: DomainRecords},
 }
 
 export class PersonalWebsiteStack extends Stack {
+
+  alarmActions: cloudwatch.IAlarmAction[]
+
   constructor(scope: Construct, id: string, props: PersonalWebsiteStackProps) {
     super(scope, id, props);
 
@@ -42,76 +46,19 @@ export class PersonalWebsiteStack extends Stack {
       lifecycleRules: [{ expiration: Duration.days(30) }],
     })
 
+    // Alarm email mechanism
     const alarmTopic = new sns.Topic(this, 'AlarmTopic', {
       displayName: 'Personal Website Alarms'
     });
 
     alarmTopic.addSubscription(new subscriptions.EmailSubscription(props.alarmEmail));
 
-    const alarmConfigs: cloudwatch.AlarmProps[] = [
-      {
-        alarmName: 'SES Sends',
-        alarmDescription: `high number of sent emails`,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-        threshold: 100,
-        evaluationPeriods: 1,
-        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
-        metric: new cloudwatch.Metric({
-          namespace: 'AWS/SES',
-          metricName: 'Send',
-          period: Duration.days(1),
-          statistic: 'sum',
-        })
-      },
-      {
-        alarmName: 'SES Rejects',
-        alarmDescription: `high number of rejected emails`,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-        threshold: 0,
-        evaluationPeriods: 1,
-        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
-        metric: new cloudwatch.Metric({
-          namespace: 'AWS/SES',
-          metricName: 'Reject',
-          period: Duration.minutes(5),
-          statistic: 'sum',
-        })
-      },
-      {
-        alarmName: 'SES Bounce Rate',
-        alarmDescription: `high rate of email bounces`,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-        threshold: 0.05,
-        evaluationPeriods: 1,
-        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
-        metric: new cloudwatch.Metric({
-          namespace: 'AWS/SES',
-          metricName: 'Reputation.BounceRate',
-          period: Duration.minutes(5),
-          statistic: 'avg',
-        })
-      },
-      {
-        alarmName: 'SES Complaint Rate',
-        alarmDescription: `high rate of email complaints`,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-        threshold: 0.001,
-        evaluationPeriods: 1,
-        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
-        metric: new cloudwatch.Metric({
-          namespace: 'AWS/SES',
-          metricName: 'Reputation.Complaint',
-          period: Duration.minutes(5),
-          statistic: 'avg',
-        })
-      },
-    ]
+    this.alarmActions = [new cw_actions.SnsAction(alarmTopic)]
 
-    alarmConfigs.forEach((props) => {
-      new cloudwatch.Alarm(this, `${props.alarmName} Alarm`, props).addAlarmAction(new cw_actions.SnsAction(alarmTopic));
-    });
+    // SES account alarms
+    this.createSesAlarms()
 
-
+    // Domain specific resources
     Object.entries(props.domainConfigs).map(([domain, records]) => {
       // Creates hosted zones
       let zone = new route53.PublicHostedZone(this, domain, { zoneName: domain })
@@ -137,7 +84,7 @@ export class PersonalWebsiteStack extends Stack {
         this.createDomainRedirectInfra(zone, domain, websiteDomain, accessLogBucket)
 
         // Home machine email infra
-        this.createFromEmailInfra(zone, homeDomain, `mailto:postmaster@${props.primaryDomain}`)
+        this.createFromEmailInfra(zone, homeDomain, `mailto:${props.postmasterEmail}`)
 
       } else {
 
@@ -202,13 +149,7 @@ export class PersonalWebsiteStack extends Stack {
       domainName: websiteDomain,
       validation: acm.CertificateValidation.fromDns(zone)
     })
-
-    certificate.metricDaysToExpiry().createAlarm(this, `${websiteDomain}-cert Expiry Alarm`, {
-      alarmName: `${websiteDomain}-cert Expiry Alarm`,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-      evaluationPeriods: 1,
-      threshold: 45, // Automatic rotation happens between 60 and 45 days before expiry
-    });
+    this.createCertAlarm(certificate, websiteDomain)
 
     const urlRewriteFn = new cloudfront.Function(this, "url-rewrite-fn", {
       comment: "re-writes urls for single page web apps.",
@@ -285,13 +226,7 @@ export class PersonalWebsiteStack extends Stack {
       subjectAlternativeNames: alternateNames,
       validation: acm.CertificateValidation.fromDns(zone)
     })
-
-    redirectCertificate.metricDaysToExpiry().createAlarm(this, `${domain}-cert Expiry Alarm`, {
-      alarmName: `${domain}-cert Expiry Alarm`,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-      evaluationPeriods: 1,
-      threshold: 45, // Automatic rotation happens between 60 and 45 days before expiry
-    });
+    this.createCertAlarm(redirectCertificate, domain)
 
     const redirectDistribution = new cloudfront.Distribution(this, `${domain}-dist`, {
       comment: `http/https redirection for ${domain}`,
@@ -322,6 +257,82 @@ export class PersonalWebsiteStack extends Stack {
         target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(redirectDistribution)),
       })
     })
+  }
+
+  createCertAlarm(cert: acm.ICertificate, domain: string) {
+    cert.metricDaysToExpiry().createAlarm(this, `${domain}-cert Expiry Alarm`, {
+      alarmName: `${domain}-cert Expiry Alarm`,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      threshold: 45, // Automatic rotation happens between 60 and 45 days before expiry
+    }).addAlarmAction(...this.alarmActions);
+  }
+
+  createSesAlarms() {
+    [
+      {
+        alarmName: 'SES Sends',
+        alarmDescription: `high number of sent emails`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 100,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/SES',
+          metricName: 'Send',
+          period: Duration.days(1),
+          statistic: 'sum',
+        })
+      },
+      {
+        alarmName: 'SES Rejects',
+        alarmDescription: `high number of rejected emails`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 0,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/SES',
+          metricName: 'Reject',
+          period: Duration.minutes(5),
+          statistic: 'sum',
+        })
+      },
+      {
+        alarmName: 'SES Bounce Rate',
+        alarmDescription: `high rate of email bounces`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 0.05,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/SES',
+          metricName: 'Reputation.BounceRate',
+          period: Duration.minutes(5),
+          statistic: 'avg',
+        })
+      },
+      {
+        alarmName: 'SES Complaint Rate',
+        alarmDescription: `high rate of email complaints`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 0.001,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/SES',
+          metricName: 'Reputation.Complaint',
+          period: Duration.minutes(5),
+          statistic: 'avg',
+        })
+      },
+    ].forEach((props) => {
+      new cloudwatch.Alarm(this, `${props.alarmName} Alarm`, props).addAlarmAction(...this.alarmActions);
+    });
+  }
+
+  createAlarmActions() {
+
   }
 
   domainJoin(parts: (string | undefined)[]) {

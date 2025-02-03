@@ -16,7 +16,8 @@ new PersonalWebsiteStack(app, 'PersonalWebsiteStack', {
   },
   websiteSubdomain: 'www',
   homeSubdomain: 'home',
-  alarmEmail: 'chris+alarm@chriswlucas.com',
+  alarmEmail: 'alarm@chriswlucas.com',
+  postmasterEmail: 'postmaster@chriswlucas.com',
   primaryDomain: 'chriswlucas.com',
   domainConfigs: {
     'chriswlucas.com': {
