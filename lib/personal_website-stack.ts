@@ -38,7 +38,6 @@ export class PersonalWebsiteStack extends Stack {
     super(scope, id, props);
 
     const websiteDomain = this.domainJoin([props.websiteSubdomain,props.primaryDomain])
-    const homeDomain = this.domainJoin([props.homeSubdomain,props.primaryDomain])
 
     // Logging bucket retains only for limited number of days
     const accessLogBucket = new s3.Bucket(this, `access-logs-bucket`, {
@@ -63,7 +62,7 @@ export class PersonalWebsiteStack extends Stack {
     // Domain specific resources
     Object.entries(props.domainConfigs).map(([domain, records]) => {
       // Creates hosted zones
-      let zone = new route53.PublicHostedZone(this, domain, { zoneName: domain })
+      const zone = new route53.PublicHostedZone(this, domain, { zoneName: domain })
 
       // Creates requested DNS records for each domain
       records.MxRecords?.forEach(recordProps =>
@@ -86,7 +85,8 @@ export class PersonalWebsiteStack extends Stack {
         this.createDomainRedirectInfra(zone, domain, websiteDomain, accessLogBucket)
 
         // Home subdomain
-        let homeZone = new route53.PublicHostedZone(this, homeDomain, { zoneName: homeDomain })
+        const homeDomain = this.domainJoin([props.homeSubdomain,props.primaryDomain])
+        const homeZone = new route53.PublicHostedZone(this, homeDomain, { zoneName: homeDomain })
         zone.addDelegation(homeZone)
 
         this.createFromEmailInfra(homeZone, homeDomain, `mailto:${props.postmasterEmail}`)
