@@ -12,6 +12,8 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 
 export interface DomainRecords {
   readonly MxRecords?: Omit<route53.MxRecordProps, 'zone'>[]
@@ -88,6 +90,7 @@ export class PersonalWebsiteStack extends Stack {
         zone.addDelegation(homeZone)
 
         this.createFromEmailInfra(homeZone, homeDomain, `mailto:${props.postmasterEmail}`)
+        this.certbotIamUser('homeZoneCertbotUser', homeZone)
 
       } else {
 
@@ -96,6 +99,39 @@ export class PersonalWebsiteStack extends Stack {
 
       }
     })
+  }
+
+  certbotIamUser(userName: string, zone: route53.IHostedZone) {
+    const iamUser = new iam.User(this, `user-${userName}`, { userName });
+
+    const accessKey = new iam.CfnAccessKey(this, `user-${userName}-key`, {
+      userName: iamUser.userName,
+    });
+
+    const secret = new secretsmanager.CfnSecret(this, `user-${userName}-key-secret`, {
+      name: `user-${userName}`,
+      secretString: `{"AccessKeyId":"${accessKey.ref}","SecretAccessKey":"${accessKey.attrSecretAccessKey}"}`
+    })
+
+    iamUser.attachInlinePolicy(new iam.Policy(this, `${userName}-certbotPolicy`, {
+      statements: [
+        // record permissions given only for the specified zone
+        new iam.PolicyStatement({
+          actions: [
+            "route53:ChangeResourceRecordSets",
+          ],
+          resources: [zone.hostedZoneArn]
+        }),
+        // permissions for all zones
+        new iam.PolicyStatement({
+          actions: [
+            "route53:ListHostedZones",
+            "route53:GetChange",
+          ],
+          resources: ["*"]
+        }),
+      ]
+    }))
   }
 
   createFromEmailInfra(
