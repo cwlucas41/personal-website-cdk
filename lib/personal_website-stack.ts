@@ -83,8 +83,11 @@ export class PersonalWebsiteStack extends Stack {
         // Website redirection for domain only as website subdomain is used above 
         this.createDomainRedirectInfra(zone, domain, websiteDomain, accessLogBucket)
 
-        // Home machine email infra
-        this.createFromEmailInfra(zone, homeDomain, `mailto:${props.postmasterEmail}`)
+        // Home subdomain
+        let homeZone = new route53.PublicHostedZone(this, homeDomain, { zoneName: homeDomain })
+        zone.addDelegation(homeZone)
+
+        this.createFromEmailInfra(homeZone, homeDomain, `mailto:${props.postmasterEmail}`)
 
       } else {
 
@@ -96,7 +99,7 @@ export class PersonalWebsiteStack extends Stack {
   }
 
   createFromEmailInfra(
-    zone: route53.HostedZone,
+    zone: route53.IHostedZone,
     domain: string,
     dmarcRua: string
   ) {
