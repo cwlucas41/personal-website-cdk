@@ -118,13 +118,19 @@ export class PersonalWebsiteStack extends Stack {
         // record permissions given only for the specified zone
         new iam.PolicyStatement({
           actions: [
+            "route53:ListResourceRecordSets",
             "route53:ChangeResourceRecordSets",
+            "route53:GetChange",
           ],
-          resources: [zone.hostedZoneArn]
+          resources: [
+            zone.hostedZoneArn,
+            "arn:aws:route53:::change/*",
+          ]
         }),
         // permissions for all zones
         new iam.PolicyStatement({
           actions: [
+            "route53:ListHostedZonesByName",
             "route53:ListHostedZones",
             "route53:GetChange",
           ],
