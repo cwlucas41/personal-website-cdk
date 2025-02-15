@@ -89,8 +89,8 @@ export class PersonalWebsiteStack extends Stack {
         const homeZone = new route53.PublicHostedZone(this, homeDomain, { zoneName: homeDomain })
         zone.addDelegation(homeZone)
 
-        this.createFromEmailInfra(homeZone, homeDomain, `mailto:${props.postmasterEmail}`)
-        this.certbotIamUser('homeZoneCertbotUser', homeZone)
+        this.createFromEmailInfra(homeZone, homeZone.zoneName, `mailto:${props.postmasterEmail}`)
+        this.dnsManagementIamUser(`${homeZone.zoneName}-dns-management`, [homeZone])
 
       } else {
 
@@ -101,21 +101,25 @@ export class PersonalWebsiteStack extends Stack {
     })
   }
 
-  certbotIamUser(userName: string, zone: route53.IHostedZone) {
-    const iamUser = new iam.User(this, `user-${userName}`, { userName });
+  dnsManagementIamUser(userName: string, zones: route53.IHostedZone[]) {
+    const iamUser = new iam.User(this, `iam-user-${userName}`, { userName });
 
-    const accessKey = new iam.CfnAccessKey(this, `user-${userName}-key`, {
+    const accessKey = new iam.CfnAccessKey(this, `iam-user-${userName}-access-key`, {
       userName: iamUser.userName,
     });
 
-    const secret = new secretsmanager.CfnSecret(this, `user-${userName}-key-secret`, {
-      name: `user-${userName}`,
-      secretString: `{"AccessKeyId":"${accessKey.ref}","SecretAccessKey":"${accessKey.attrSecretAccessKey}"}`
+    const secret = new secretsmanager.CfnSecret(this, `iam-user-${userName}-access-key-secret`, {
+      name: `iam-user-${userName}-access-key`,
+      secretString: JSON.stringify({
+        "AccessKeyId": accessKey.ref,
+        "SecretAccessKey": accessKey.attrSecretAccessKey
+      })
     })
 
-    iamUser.attachInlinePolicy(new iam.Policy(this, `${userName}-certbotPolicy`, {
+    // policy constructed for libdns
+    // see https://github.com/caddy-dns/route53
+    const policy = new iam.Policy(this, `${userName}-dns-management-policy`, {
       statements: [
-        // record permissions given only for the specified zone
         new iam.PolicyStatement({
           actions: [
             "route53:ListResourceRecordSets",
@@ -123,21 +127,21 @@ export class PersonalWebsiteStack extends Stack {
             "route53:GetChange",
           ],
           resources: [
-            zone.hostedZoneArn,
+            ...zones.map(zone => zone.hostedZoneArn),
             "arn:aws:route53:::change/*",
           ]
         }),
-        // permissions for all zones
         new iam.PolicyStatement({
           actions: [
             "route53:ListHostedZonesByName",
             "route53:ListHostedZones",
-            "route53:GetChange",
           ],
           resources: ["*"]
         }),
       ]
-    }))
+    })
+
+    iamUser.attachInlinePolicy(policy)
   }
 
   createFromEmailInfra(
