@@ -89,7 +89,7 @@ export class PersonalWebsiteStack extends Stack {
         const homeZone = new route53.PublicHostedZone(this, homeDomain, { zoneName: homeDomain })
         zone.addDelegation(homeZone)
 
-        this.createFromEmailInfra(homeZone, homeZone.zoneName, `mailto:${props.postmasterEmail}`)
+        this.createFromEmailInfra(homeZone, `mailto:${props.postmasterEmail}`)
         this.dnsManagementIamUser(`${homeZone.zoneName}-dns-management`, [homeZone])
 
       } else {
@@ -146,39 +146,18 @@ export class PersonalWebsiteStack extends Stack {
 
   createFromEmailInfra(
     zone: route53.IHostedZone,
-    domain: string,
     dmarcRua: string
   ) {
-    const fromDomain = this.domainJoin(['mail', domain])
+    const fromDomain = this.domainJoin(['mail', zone.zoneName])
 
-    const domainIdentity = new ses.EmailIdentity(this, `Email-${domain}`, {
-      identity: ses.Identity.domain(domain),
+    const domainIdentity = new ses.EmailIdentity(this, `Email-${zone.zoneName}`, {
+      identity: ses.Identity.publicHostedZone(zone),
       mailFromDomain: fromDomain,
     })
 
-    new route53.MxRecord(this, `${fromDomain}-mx`, {
+    new route53.TxtRecord(this, `Email-${zone.zoneName}-DmarcTxtRecord`, {
       zone,
-      recordName: `${fromDomain}.`,
-      values: [ { priority: 10, hostName: `feedback-smtp.${Stack.of(this).region}.amazonses.com` }]
-    })
-
-    new route53.TxtRecord(this, `${fromDomain}-spf`, {
-      zone,
-      recordName: `${fromDomain}.`,
-      values: [ 'v=spf1 include:amazonses.com ~all' ]
-    })
-
-    domainIdentity.dkimRecords.forEach((dkimRecord, index) =>
-      new route53.CnameRecord(this, `${domain}-dkim${index+1}-cname`, {
-        zone,
-        recordName: `${dkimRecord.name}.`,
-        domainName: dkimRecord.value,
-      })
-    )
-
-    new route53.TxtRecord(this, `${domain}-dmarc`, {
-      zone,
-      recordName: `_dmarc.${domain}.`,
+      recordName: `_dmarc`,
       values: [ `v=DMARC1;p=reject;rua=${dmarcRua}` ]
     })
   }
