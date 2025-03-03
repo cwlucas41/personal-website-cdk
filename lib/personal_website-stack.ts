@@ -33,6 +33,18 @@ export interface PersonalWebsiteStackProps extends StackProps {
   readonly domainConfigs: { [key: string]: DomainRecords },
 }
 
+interface CreateSesSqsDestinationProps {
+  name: string,
+  description: string,
+  configurationSet: ses.IConfigurationSet,
+  events: ses.EmailSendingEvent[],
+  /**
+   * Determines if an alarm is created
+   * @default true
+   */
+  alarm?: boolean
+}
+
 export class PersonalWebsiteStack extends Stack {
 
   alarmActions: cloudwatch.IAlarmAction[]
@@ -176,15 +188,33 @@ export class PersonalWebsiteStack extends Stack {
       values: [`v=DMARC1;p=reject;rua=${dmarcRua}`],
     })
 
-    this.createSesSqsDestination(zoneNameWithoutPeriods, 'failure', defaultConfigurationSet, [
-      ses.EmailSendingEvent.REJECT,
-      ses.EmailSendingEvent.BOUNCE,
-      ses.EmailSendingEvent.RENDERING_FAILURE,
-      ses.EmailSendingEvent.DELIVERY_DELAY,
-    ])
-    this.createSesSqsDestination(zoneNameWithoutPeriods, 'complaint', defaultConfigurationSet, [
-      ses.EmailSendingEvent.COMPLAINT
-    ])
+    this.createSesSqsDestination({
+      name: zoneNameWithoutPeriods,
+      description: 'failure',
+      configurationSet: defaultConfigurationSet,
+      events: [
+        ses.EmailSendingEvent.REJECT,
+        ses.EmailSendingEvent.BOUNCE,
+        ses.EmailSendingEvent.RENDERING_FAILURE,
+      ]
+    })
+    this.createSesSqsDestination({
+      name: zoneNameWithoutPeriods,
+      description: 'complaint',
+      configurationSet: defaultConfigurationSet,
+      events: [
+        ses.EmailSendingEvent.COMPLAINT
+      ]
+    })
+    this.createSesSqsDestination({
+      name: zoneNameWithoutPeriods,
+      description: 'delay',
+      configurationSet: defaultConfigurationSet,
+      events: [
+        ses.EmailSendingEvent.DELIVERY_DELAY
+      ],
+      alarm: false
+    })
 
     const archiveKey = new kms.Key(this, `${zone.zoneName}-mail-archive-key`, {
       alias: `${zoneNameWithoutPeriods}-mail-archive-key`,
@@ -361,30 +391,31 @@ export class PersonalWebsiteStack extends Stack {
     }).addAlarmAction(...this.alarmActions);
   }
 
-  createSesSqsDestination(name: string, description: string, configurationSet: ses.IConfigurationSet, events: ses.EmailSendingEvent[], alarmWithQueue: boolean = true): sns.ITopic {
-    const topic = new sns.Topic(this, `${name}-mail-${description}-destination-topic`, {
-      displayName: `${name}-complaint-destination-topic`,
+  createSesSqsDestination(props: CreateSesSqsDestinationProps): sns.ITopic {
+    const alarm = props.alarm ?? true
+
+    const topic = new sns.Topic(this, `${props.name}-mail-${props.description}-destination-topic`, {
+      displayName: `${props.name}-complaint-destination-topic`,
     })
 
-    new ses.ConfigurationSetEventDestination(this, `${name}-mail-${description}-destination`, {
-      configurationSet: configurationSet,
+    new ses.ConfigurationSetEventDestination(this, `${props.name}-mail-${props.description}-destination`, {
+      configurationSet: props.configurationSet,
       destination: ses.EventDestination.snsTopic(topic),
-      events,
+      events: props.events,
     })
 
-    if (alarmWithQueue) {
+    const queue = new sqs.Queue(this, `${props.name}-mail-${props.description}-destination-queue`, {
+      queueName: `${props.name}-mail-${props.description}-destination-queue`,
+      retentionPeriod: Duration.days(14),
+      enforceSSL: true,
+    })
 
-      const queue = new sqs.Queue(this, `${name}-mail-${description}-destination-queue`, {
-        queueName: `${name}-mail-${description}-destination-queue`,
-        retentionPeriod: Duration.days(14),
-        enforceSSL: true,
-      })
+    topic.addSubscription(new subscriptions.SqsSubscription(queue))
 
-      topic.addSubscription(new subscriptions.SqsSubscription(queue))
-
-      new cloudwatch.Alarm(this, `${name}-mail-${description}-alarm`, {
+    if (alarm) {
+      new cloudwatch.Alarm(this, `${props.name}-mail-${props.description}-alarm`, {
         alarmName: `${queue.queueName} at least one message visible`,
-        alarmDescription: `at least one ${description} for a ${name} email`,
+        alarmDescription: `at least one ${props.description} for a ${props.name} email`,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
         threshold: 0,
         evaluationPeriods: 1,
