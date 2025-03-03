@@ -30,7 +30,7 @@ export interface PersonalWebsiteStackProps extends StackProps {
   readonly alarmEmail: string,
   readonly postmasterEmail: string,
   readonly primaryDomain: string,
-  readonly domainConfigs: {[key: string]: DomainRecords},
+  readonly domainConfigs: { [key: string]: DomainRecords },
 }
 
 export class PersonalWebsiteStack extends Stack {
@@ -40,7 +40,7 @@ export class PersonalWebsiteStack extends Stack {
   constructor(scope: Construct, id: string, props: PersonalWebsiteStackProps) {
     super(scope, id, props);
 
-    const websiteDomain = this.domainJoin([props.websiteSubdomain,props.primaryDomain])
+    const websiteDomain = this.domainJoin([props.websiteSubdomain, props.primaryDomain])
 
     // Logging bucket retains only for limited number of days
     const accessLogBucket = new s3.Bucket(this, `access-logs-bucket`, {
@@ -88,7 +88,7 @@ export class PersonalWebsiteStack extends Stack {
         this.createDomainRedirectInfra(zone, domain, websiteDomain, accessLogBucket)
 
         // Home subdomain
-        const homeDomain = this.domainJoin([props.homeSubdomain,props.primaryDomain])
+        const homeDomain = this.domainJoin([props.homeSubdomain, props.primaryDomain])
         const homeZone = new route53.PublicHostedZone(this, homeDomain, { zoneName: homeDomain })
         zone.addDelegation(homeZone)
 
@@ -173,7 +173,7 @@ export class PersonalWebsiteStack extends Stack {
     new route53.TxtRecord(this, `Email-${zone.zoneName}-DmarcTxtRecord`, {
       zone,
       recordName: `_dmarc`,
-      values: [ `v=DMARC1;p=reject;rua=${dmarcRua}` ],
+      values: [`v=DMARC1;p=reject;rua=${dmarcRua}`],
     })
 
     this.createSesSqsDestination(zoneNameWithoutPeriods, 'failure', defaultConfigurationSet, [
@@ -192,13 +192,13 @@ export class PersonalWebsiteStack extends Stack {
     })
 
     archiveKey.addToResourcePolicy(new iam.PolicyStatement({
-      principals: [ new iam.ServicePrincipal("ses.amazonaws.com") ],
+      principals: [new iam.ServicePrincipal("ses.amazonaws.com")],
       actions: [
         "kms:Decrypt",
         "kms:GenerateDataKey*",
         "kms:DescribeKey"
       ],
-      resources: [ '*' ],
+      resources: ['*'],
     }))
 
     const archive = new ses.CfnMailManagerArchive(this, `${zone.zoneName}-mail-archive-2`, {
@@ -224,7 +224,7 @@ export class PersonalWebsiteStack extends Stack {
       }),
       installLatestAwsSdk: true,
     })
-    
+
   }
 
   createWebHostingInfra(
@@ -379,7 +379,7 @@ export class PersonalWebsiteStack extends Stack {
         retentionPeriod: Duration.days(14),
         enforceSSL: true,
       })
-  
+
       topic.addSubscription(new subscriptions.SqsSubscription(queue))
 
       new cloudwatch.Alarm(this, `${name}-mail-${description}-alarm`, {
