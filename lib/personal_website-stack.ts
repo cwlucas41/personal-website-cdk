@@ -14,6 +14,9 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as kms from 'aws-cdk-lib/aws-kms';
+import * as cr from 'aws-cdk-lib/custom-resources';
 
 export interface DomainRecords {
   readonly MxRecords?: Omit<route53.MxRecordProps, 'zone'>[]
@@ -150,16 +153,78 @@ export class PersonalWebsiteStack extends Stack {
   ) {
     const fromDomain = this.domainJoin(['mail', zone.zoneName])
 
-    const domainIdentity = new ses.EmailIdentity(this, `Email-${zone.zoneName}`, {
+    const zoneNameWithoutPeriods = zone.zoneName.replace(new RegExp(/\./g), '')
+
+    const defaultConfigurationSet = new ses.ConfigurationSet(this, `${zone.zoneName}-default-configuration-set`, {
+      // The name can contain up to 64 alphanumeric characters, including letters, numbers, hyphens (-) and underscores (_) only.
+      configurationSetName: `${zoneNameWithoutPeriods}-default-configuration-set`,
+      vdmOptions: {
+        engagementMetrics: true,
+        optimizedSharedDelivery: true,
+      },
+    })
+
+    new ses.EmailIdentity(this, `Email-${zone.zoneName}`, {
       identity: ses.Identity.publicHostedZone(zone),
       mailFromDomain: fromDomain,
+      configurationSet: defaultConfigurationSet,
     })
 
     new route53.TxtRecord(this, `Email-${zone.zoneName}-DmarcTxtRecord`, {
       zone,
       recordName: `_dmarc`,
-      values: [ `v=DMARC1;p=reject;rua=${dmarcRua}` ]
+      values: [ `v=DMARC1;p=reject;rua=${dmarcRua}` ],
     })
+
+    this.createSesSqsDestination(zoneNameWithoutPeriods, 'failure', defaultConfigurationSet, [
+      ses.EmailSendingEvent.REJECT,
+      ses.EmailSendingEvent.BOUNCE,
+      ses.EmailSendingEvent.RENDERING_FAILURE,
+      ses.EmailSendingEvent.DELIVERY_DELAY,
+    ])
+    this.createSesSqsDestination(zoneNameWithoutPeriods, 'complaint', defaultConfigurationSet, [
+      ses.EmailSendingEvent.COMPLAINT
+    ])
+
+    const archiveKey = new kms.Key(this, `${zone.zoneName}-mail-archive-key`, {
+      alias: `${zoneNameWithoutPeriods}-mail-archive-key`,
+      description: `key for the ${zone.zoneName} email archive`,
+    })
+
+    archiveKey.addToResourcePolicy(new iam.PolicyStatement({
+      principals: [ new iam.ServicePrincipal("ses.amazonaws.com") ],
+      actions: [
+        "kms:Decrypt",
+        "kms:GenerateDataKey*",
+        "kms:DescribeKey"
+      ],
+      resources: [ '*' ],
+    }))
+
+    const archive = new ses.CfnMailManagerArchive(this, `${zone.zoneName}-mail-archive-2`, {
+      archiveName: `${zoneNameWithoutPeriods}-mail-archive-2`,
+      kmsKeyArn: archiveKey.keyArn,
+      retention: {
+        retentionPeriod: 'SIX_MONTHS',
+      }
+    })
+
+    new cr.AwsCustomResource(this, `${zone.zoneName}-mail-archive-attachment`, {
+      onUpdate: {
+        service: 'sesv2',
+        action: 'PutConfigurationSetArchivingOptionsCommand',
+        parameters: {
+          ConfigurationSetName: defaultConfigurationSet.configurationSetName,
+          ArchiveArn: archive.attrArchiveArn,
+        },
+        physicalResourceId: cr.PhysicalResourceId.of(Date.now().toString()),
+      },
+      policy: cr.AwsCustomResourcePolicy.fromSdkCalls({
+        resources: cr.AwsCustomResourcePolicy.ANY_RESOURCE,
+      }),
+      installLatestAwsSdk: true,
+    })
+    
   }
 
   createWebHostingInfra(
@@ -296,6 +361,44 @@ export class PersonalWebsiteStack extends Stack {
     }).addAlarmAction(...this.alarmActions);
   }
 
+  createSesSqsDestination(name: string, description: string, configurationSet: ses.IConfigurationSet, events: ses.EmailSendingEvent[], alarmWithQueue: boolean = true): sns.ITopic {
+    const topic = new sns.Topic(this, `${name}-mail-${description}-destination-topic`, {
+      displayName: `${name}-complaint-destination-topic`,
+    })
+
+    new ses.ConfigurationSetEventDestination(this, `${name}-mail-${description}-destination`, {
+      configurationSet: configurationSet,
+      destination: ses.EventDestination.snsTopic(topic),
+      events,
+    })
+
+    if (alarmWithQueue) {
+
+      const queue = new sqs.Queue(this, `${name}-mail-${description}-destination-queue`, {
+        queueName: `${name}-mail-${description}-destination-queue`,
+        retentionPeriod: Duration.days(14),
+        enforceSSL: true,
+      })
+  
+      topic.addSubscription(new subscriptions.SqsSubscription(queue))
+
+      new cloudwatch.Alarm(this, `${name}-mail-${description}-alarm`, {
+        alarmName: `${queue.queueName} at least one message visible`,
+        alarmDescription: `at least one ${description} for a ${name} email`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 0,
+        evaluationPeriods: 1,
+        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
+        metric: queue.metricApproximateNumberOfMessagesVisible({
+          period: Duration.minutes(1),
+          statistic: 'max'
+        }),
+      }).addAlarmAction(...this.alarmActions)
+    }
+
+    return topic
+  }
+
   createSesAlarms() {
     [
       {
@@ -357,10 +460,6 @@ export class PersonalWebsiteStack extends Stack {
     ].forEach((props) => {
       new cloudwatch.Alarm(this, `${props.alarmName} Alarm`, props).addAlarmAction(...this.alarmActions);
     });
-  }
-
-  createAlarmActions() {
-
   }
 
   domainJoin(parts: (string | undefined)[]) {
