@@ -35,9 +35,8 @@ export interface PersonalWebsiteStackProps extends StackProps {
 
 interface CreateSesSqsDestinationProps {
   name: string,
-  description: string,
   configurationSet: ses.IConfigurationSet,
-  events: ses.EmailSendingEvent[],
+  event: ses.EmailSendingEvent,
   /**
    * Determines if an alarm is created
    * @default true
@@ -190,29 +189,28 @@ export class PersonalWebsiteStack extends Stack {
 
     this.createSesSqsDestination({
       name: zoneNameWithoutPeriods,
-      description: 'failure',
       configurationSet: defaultConfigurationSet,
-      events: [
-        ses.EmailSendingEvent.REJECT,
-        ses.EmailSendingEvent.BOUNCE,
-        ses.EmailSendingEvent.RENDERING_FAILURE,
-      ]
+      event: ses.EmailSendingEvent.REJECT,
     })
     this.createSesSqsDestination({
       name: zoneNameWithoutPeriods,
-      description: 'complaint',
       configurationSet: defaultConfigurationSet,
-      events: [
-        ses.EmailSendingEvent.COMPLAINT
-      ]
+      event: ses.EmailSendingEvent.BOUNCE,
     })
     this.createSesSqsDestination({
       name: zoneNameWithoutPeriods,
-      description: 'delay',
       configurationSet: defaultConfigurationSet,
-      events: [
-        ses.EmailSendingEvent.DELIVERY_DELAY
-      ],
+      event: ses.EmailSendingEvent.RENDERING_FAILURE,
+    })
+    this.createSesSqsDestination({
+      name: zoneNameWithoutPeriods,
+      configurationSet: defaultConfigurationSet,
+      event: ses.EmailSendingEvent.COMPLAINT,
+    })
+    this.createSesSqsDestination({
+      name: zoneNameWithoutPeriods,
+      configurationSet: defaultConfigurationSet,
+      event: ses.EmailSendingEvent.DELIVERY_DELAY,
       alarm: false
     })
 
@@ -394,18 +392,18 @@ export class PersonalWebsiteStack extends Stack {
   createSesSqsDestination(props: CreateSesSqsDestinationProps): sns.ITopic {
     const alarm = props.alarm ?? true
 
-    const topic = new sns.Topic(this, `${props.name}-mail-${props.description}-destination-topic`, {
+    const topic = new sns.Topic(this, `${props.name}-mail-${props.event}-destination-topic`, {
       displayName: `${props.name}-complaint-destination-topic`,
     })
 
-    new ses.ConfigurationSetEventDestination(this, `${props.name}-mail-${props.description}-destination`, {
+    new ses.ConfigurationSetEventDestination(this, `${props.name}-mail-${props.event}-destination`, {
       configurationSet: props.configurationSet,
       destination: ses.EventDestination.snsTopic(topic),
-      events: props.events,
+      events: [props.event],
     })
 
-    const queue = new sqs.Queue(this, `${props.name}-mail-${props.description}-destination-queue`, {
-      queueName: `${props.name}-mail-${props.description}-destination-queue`,
+    const queue = new sqs.Queue(this, `${props.name}-mail-${props.event}-destination-queue`, {
+      queueName: `${props.name}-mail-${props.event}-destination-queue`,
       retentionPeriod: Duration.days(14),
       enforceSSL: true,
     })
@@ -413,9 +411,9 @@ export class PersonalWebsiteStack extends Stack {
     topic.addSubscription(new subscriptions.SqsSubscription(queue))
 
     if (alarm) {
-      new cloudwatch.Alarm(this, `${props.name}-mail-${props.description}-alarm`, {
+      new cloudwatch.Alarm(this, `${props.name}-mail-${props.event}-alarm`, {
         alarmName: `${queue.queueName} at least one message visible`,
-        alarmDescription: `at least one ${props.description} for a ${props.name} email`,
+        alarmDescription: `at least one ${props.event} for a ${props.name} email`,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
         threshold: 0,
         evaluationPeriods: 1,
