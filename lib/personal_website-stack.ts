@@ -25,12 +25,11 @@ export interface DomainRecords {
 }
 
 export interface PersonalWebsiteStackProps extends StackProps {
-  readonly websiteSubdomain: string,
   readonly homeSubdomain: string,
   readonly alarmEmail: string,
   readonly postmasterEmail: string,
-  readonly primaryDomain: string,
-  readonly domainConfigs: { [key: string]: DomainRecords },
+  readonly domain: string,
+  readonly records: DomainRecords,
 }
 
 interface CreateSesSqsDestinationProps {
@@ -50,8 +49,6 @@ export class PersonalWebsiteStack extends Stack {
 
   constructor(scope: Construct, id: string, props: PersonalWebsiteStackProps) {
     super(scope, id, props);
-
-    const websiteDomain = this.domainJoin([props.websiteSubdomain, props.primaryDomain])
 
     // Logging bucket retains only for limited number of days
     const accessLogBucket = new s3.Bucket(this, `access-logs-bucket`, {
@@ -73,46 +70,36 @@ export class PersonalWebsiteStack extends Stack {
     // SES account alarms
     this.createSesAlarms()
 
-    // Domain specific resources
-    Object.entries(props.domainConfigs).map(([domain, records]) => {
-      // Creates hosted zones
-      const zone = new route53.PublicHostedZone(this, domain, { zoneName: domain })
+    // Domain hosted zone
+    const zone = new route53.PublicHostedZone(this, props.domain, { zoneName: props.domain })
 
-      // Creates requested DNS records for each domain
-      records.MxRecords?.forEach(recordProps =>
-        new route53.MxRecord(this, `${this.domainJoin([recordProps.recordName, domain])}-mx`, { zone, ...recordProps })
-      )
-      records.CnameRecords?.forEach(recordProps =>
-        new route53.CnameRecord(this, `${this.domainJoin([recordProps.recordName, domain])}-cname`, { zone, ...recordProps })
-      )
-      records.TxtRecords?.forEach(recordProps =>
-        new route53.TxtRecord(this, `${this.domainJoin([recordProps.recordName, domain])}-txt`, { zone, ...recordProps })
-      )
+    // Creates requested DNS records for each domain
+    props.records.MxRecords?.forEach(recordProps =>
+      new route53.MxRecord(this, `${this.domainJoin([recordProps.recordName, props.domain])}-mx`, { zone, ...recordProps })
+    )
+    props.records.CnameRecords?.forEach(recordProps =>
+      new route53.CnameRecord(this, `${this.domainJoin([recordProps.recordName, props.domain])}-cname`, { zone, ...recordProps })
+    )
+    props.records.TxtRecords?.forEach(recordProps =>
+      new route53.TxtRecord(this, `${this.domainJoin([recordProps.recordName, props.domain])}-txt`, { zone, ...recordProps })
+    )
 
+    // Website hosting
+    const websiteDomain = this.domainJoin(['www', props.domain])
+    this.createWebHostingInfra(zone, websiteDomain, accessLogBucket)
 
-      if (domain == props.primaryDomain) {
+    // Redirect to www
+    this.createDomainRedirectInfra(zone, props.domain, websiteDomain, accessLogBucket)
 
-        // Website hosting
-        this.createWebHostingInfra(zone, websiteDomain, accessLogBucket)
+    // Home subdomain zone
+    const homeDomain = this.domainJoin([props.homeSubdomain, props.domain])
+    const homeZone = new route53.PublicHostedZone(this, homeDomain, { zoneName: homeDomain })
+    zone.addDelegation(homeZone)
 
-        // Website redirection for domain only as website subdomain is used above 
-        this.createDomainRedirectInfra(zone, domain, websiteDomain, accessLogBucket)
+    // Home subdomain email
+    this.createFromEmailInfra(homeZone, `mailto:${props.postmasterEmail}`)
+    this.dnsManagementIamUser(`${homeZone.zoneName}-dns-management`, [homeZone])
 
-        // Home subdomain
-        const homeDomain = this.domainJoin([props.homeSubdomain, props.primaryDomain])
-        const homeZone = new route53.PublicHostedZone(this, homeDomain, { zoneName: homeDomain })
-        zone.addDelegation(homeZone)
-
-        this.createFromEmailInfra(homeZone, `mailto:${props.postmasterEmail}`)
-        this.dnsManagementIamUser(`${homeZone.zoneName}-dns-management`, [homeZone])
-
-      } else {
-
-        // Website redirection for domain and website subdomain to primary domain website subdomain
-        this.createDomainRedirectInfra(zone, domain, websiteDomain, accessLogBucket, [props.websiteSubdomain])
-
-      }
-    })
   }
 
   dnsManagementIamUser(userName: string, zones: route53.IHostedZone[]) {
