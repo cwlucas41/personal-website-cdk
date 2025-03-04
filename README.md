@@ -22,17 +22,8 @@ Contains the Infrastructure to host [www.chriswlucas.com](https://www.chriswluca
 ### Web hosting and redirects diagram
 ![](doc/website-infrastructure.png)
 
-
 ## URLs expected to work
 * http://chriswlucas.com
-* http://chriswlucas.org
-* http://chriswlucas.net
 * http://www.chriswlucas.com
-* http://www.chriswlucas.org
-* http://www.chriswlucas.net
 * https://chriswlucas.com
-* https://chriswlucas.org
-* https://chriswlucas.net
 * https://www.chriswlucas.com
-* https://www.chriswlucas.org
-* https://www.chriswlucas.net

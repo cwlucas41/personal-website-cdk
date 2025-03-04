@@ -46,21 +46,5 @@ new PersonalWebsiteStack(app, 'PersonalWebsiteStack', {
         },
       ],
     },
-    'chriswlucas.org': {
-      TxtRecords: [
-        {
-          values: ['google-site-verification=eum67Zs46nv_NLwhZ0PV6aPdTIoJIv2cjnrd3t6VO5o'],
-          ttl: Duration.hours(1),
-        },
-      ],
-    },
-    'chriswlucas.net': {
-      TxtRecords: [
-        {
-          values: ['google-site-verification=oenFzY8fj0pDqA1DebjDT38z49YkQjccTzaXAXtN1A8'],
-          ttl: Duration.hours(1),
-        },
-      ],
-    },
   },
 });
