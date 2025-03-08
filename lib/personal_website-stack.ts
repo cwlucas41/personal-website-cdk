@@ -67,7 +67,11 @@ export class PersonalWebsiteStack extends Stack {
 
     this.alarmActions = [new cw_actions.SnsAction(alarmTopic)]
 
-    // SES account alarms
+    // SES account level constructs
+    new ses.VdmAttributes(this, 'ses-vdm', {
+      engagementMetrics: false,
+      optimizedSharedDelivery: true,
+    });
     this.createSesAlarms()
 
     // Domain hosted zone
@@ -147,24 +151,19 @@ export class PersonalWebsiteStack extends Stack {
 
   createFromEmailInfra(
     zone: route53.IHostedZone,
-    dmarcRua: string
+    dmarcRua: string,
+    fromSubdomain: string = 'mail'
   ) {
-    const fromDomain = this.domainJoin(['mail', zone.zoneName])
-
     const zoneNameWithoutPeriods = zone.zoneName.replace(new RegExp(/\./g), '')
 
     const defaultConfigurationSet = new ses.ConfigurationSet(this, `${zone.zoneName}-default-configuration-set`, {
       // The name can contain up to 64 alphanumeric characters, including letters, numbers, hyphens (-) and underscores (_) only.
       configurationSetName: `${zoneNameWithoutPeriods}-default-configuration-set`,
-      vdmOptions: {
-        engagementMetrics: true,
-        optimizedSharedDelivery: true,
-      },
     })
 
     new ses.EmailIdentity(this, `Email-${zone.zoneName}`, {
       identity: ses.Identity.publicHostedZone(zone),
-      mailFromDomain: fromDomain,
+      mailFromDomain: this.domainJoin([fromSubdomain, zone.zoneName]),
       configurationSet: defaultConfigurationSet,
     })
 
@@ -174,6 +173,14 @@ export class PersonalWebsiteStack extends Stack {
       values: [`v=DMARC1;p=reject;rua=${dmarcRua}`],
     })
 
+    // Experiment: try adding SPF to zone domain in addition to mail subdomain
+    new route53.TxtRecord(this, `Email-${zone.zoneName}-SpfTxtRecord`, {
+      zone,
+      recordName: '',
+      values: [`v=spf1 include:amazonses.com ~all`],
+    })
+
+    // No templates used currently so no RENDERING_FAILURE destination
     this.createSesSqsDestination({
       name: zoneNameWithoutPeriods,
       configurationSet: defaultConfigurationSet,
@@ -183,11 +190,6 @@ export class PersonalWebsiteStack extends Stack {
       name: zoneNameWithoutPeriods,
       configurationSet: defaultConfigurationSet,
       event: ses.EmailSendingEvent.BOUNCE,
-    })
-    this.createSesSqsDestination({
-      name: zoneNameWithoutPeriods,
-      configurationSet: defaultConfigurationSet,
-      event: ses.EmailSendingEvent.RENDERING_FAILURE,
     })
     this.createSesSqsDestination({
       name: zoneNameWithoutPeriods,
