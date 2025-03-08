@@ -25,10 +25,11 @@ export interface DomainRecords {
 }
 
 export interface PersonalWebsiteStackProps extends StackProps {
-  readonly homeSubdomain: string,
   readonly alarmEmail: string,
   readonly postmasterEmail: string,
-  readonly domain: string,
+  readonly apexDomain: string,
+  readonly homeSubdomain: string,
+  readonly websiteSubdomain: string,
   readonly records: DomainRecords,
 }
 
@@ -74,36 +75,46 @@ export class PersonalWebsiteStack extends Stack {
     });
     this.createSesAlarms()
 
-    // Domain hosted zone
-    const zone = new route53.PublicHostedZone(this, props.domain, { zoneName: props.domain })
+    // DNSSEC
+    const dnssecKey = new kms.Key(this, `${props.apexDomain}-dnssec-key`, {
+      keySpec: kms.KeySpec.ECC_NIST_P256,
+      keyUsage: kms.KeyUsage.SIGN_VERIFY,
+    });
 
-    // Creates requested DNS records for each domain
+    // Apex hosted zone
+    const zone = this.createHostedZone({
+      domainName: props.apexDomain,
+      dnssecKey
+    })
+
+    // Creates configured DNS records
     props.records.MxRecords?.forEach(recordProps =>
-      new route53.MxRecord(this, `${this.domainJoin([recordProps.recordName, props.domain])}-mx`, { zone, ...recordProps })
+      new route53.MxRecord(this, `${this.domainJoin([recordProps.recordName, props.apexDomain])}-mx`, { zone, ...recordProps })
     )
     props.records.CnameRecords?.forEach(recordProps =>
-      new route53.CnameRecord(this, `${this.domainJoin([recordProps.recordName, props.domain])}-cname`, { zone, ...recordProps })
+      new route53.CnameRecord(this, `${this.domainJoin([recordProps.recordName, props.apexDomain])}-cname`, { zone, ...recordProps })
     )
     props.records.TxtRecords?.forEach(recordProps =>
-      new route53.TxtRecord(this, `${this.domainJoin([recordProps.recordName, props.domain])}-txt`, { zone, ...recordProps })
+      new route53.TxtRecord(this, `${this.domainJoin([recordProps.recordName, props.apexDomain])}-txt`, { zone, ...recordProps })
     )
 
-    // Website hosting
-    const websiteDomain = this.domainJoin(['www', props.domain])
+    // Website hosting at website subdomain
+    const websiteDomain = this.domainJoin([props.websiteSubdomain, props.apexDomain])
     this.createWebHostingInfra(zone, websiteDomain, accessLogBucket)
 
-    // Redirect to www
-    this.createDomainRedirectInfra(zone, props.domain, websiteDomain, accessLogBucket)
+    // Redirect apex to website
+    this.createDomainRedirectInfra(zone, props.apexDomain, websiteDomain, accessLogBucket)
 
     // Home subdomain zone
-    const homeDomain = this.domainJoin([props.homeSubdomain, props.domain])
-    const homeZone = new route53.PublicHostedZone(this, homeDomain, { zoneName: homeDomain })
-    zone.addDelegation(homeZone)
+    const homeZone = this.createHostedZone({
+      domainName: this.domainJoin([props.homeSubdomain, props.apexDomain]),
+      delegatorZone: zone,
+      dnssecKey
+    })
 
     // Home subdomain email
     this.createFromEmailInfra(homeZone, `mailto:${props.postmasterEmail}`)
     this.dnsManagementIamUser(`${homeZone.zoneName}-dns-management`, [homeZone])
-
   }
 
   dnsManagementIamUser(userName: string, zones: route53.IHostedZone[]) {
@@ -149,6 +160,26 @@ export class PersonalWebsiteStack extends Stack {
     iamUser.attachInlinePolicy(policy)
   }
 
+  createHostedZone(props: {
+    domainName: string,
+    delegatorZone?: route53.PublicHostedZone,
+    dnssecKey?: kms.IKey,
+  }
+  ): route53.PublicHostedZone {
+    const zone = new route53.PublicHostedZone(this, props.domainName, { zoneName: props.domainName })
+
+    if (props.delegatorZone) {
+      props.delegatorZone.addDelegation(zone)
+    }
+
+    if (props.dnssecKey) {
+      zone.enableDnssec({ kmsKey: props.dnssecKey })
+      this.createDnssecAlarms(zone)
+    }
+
+    return zone
+  }
+
   createFromEmailInfra(
     zone: route53.IHostedZone,
     dmarcRua: string,
@@ -171,13 +202,6 @@ export class PersonalWebsiteStack extends Stack {
       zone,
       recordName: `_dmarc`,
       values: [`v=DMARC1;p=reject;rua=${dmarcRua}`],
-    })
-
-    // Experiment: try adding SPF to zone domain in addition to mail subdomain
-    new route53.TxtRecord(this, `Email-${zone.zoneName}-SpfTxtRecord`, {
-      zone,
-      recordName: '',
-      values: [`v=spf1 include:amazonses.com ~all`],
     })
 
     // No templates used currently so no RENDERING_FAILURE destination
@@ -477,6 +501,53 @@ export class PersonalWebsiteStack extends Stack {
       },
     ].forEach((props) => {
       new cloudwatch.Alarm(this, `${props.alarmName} Alarm`, props).addAlarmAction(...this.alarmActions);
+    });
+  }
+
+  createDnssecAlarms(hostedZone: route53.IHostedZone) {
+    // DNSSEC metrics emitted 1 per 4 hours per hosted zone
+    // https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/monitoring-hosted-zones-with-cloudwatch.html
+    const metricEmissionPeriod = Duration.hours(4)
+    const alarmAggregationPeriod = Duration.hours(1)
+    const evaluationPeriods = Math.ceil(metricEmissionPeriod.toSeconds() / alarmAggregationPeriod.toSeconds());
+
+    const alarmProps: cloudwatch.AlarmProps[] = [
+      {
+        alarmName: `${hostedZone.zoneName} - DNSSECInternalFailure`,
+        alarmDescription: `An object in the hosted zone is in an INTERNAL_FAILURE state`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 0,
+        evaluationPeriods,
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Route53',
+          metricName: 'DNSSECInternalFailure',
+          dimensionsMap: {
+            HostedZoneId: hostedZone.hostedZoneId,
+          },
+          period: alarmAggregationPeriod,
+          statistic: 'sum',
+        })
+      },
+      {
+        alarmName: `${hostedZone.zoneName} - DNSSECKeySigningKeysNeedingAction`,
+        alarmDescription: `DNSSEC key signing keys (KSKs) are in an ACTION_NEEDED state (due to KMS failure).`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 0,
+        evaluationPeriods,
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/Route53',
+          metricName: 'DNSSECKeySigningKeysNeedingAction',
+          dimensionsMap: {
+            HostedZoneId: hostedZone.hostedZoneId,
+          },
+          period: alarmAggregationPeriod,
+          statistic: 'sum',
+        })
+      },
+    ]
+
+    alarmProps.forEach((prop) => {
+      new cloudwatch.Alarm(this, `${prop.alarmName} Alarm`, prop).addAlarmAction(...this.alarmActions);
     });
   }
 

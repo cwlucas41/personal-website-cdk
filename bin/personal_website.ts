@@ -8,10 +8,11 @@ new PersonalWebsiteStack(app, 'PersonalWebsiteStack', {
   env: {
     region: 'us-east-1',
   },
-  homeSubdomain: 'home',
   alarmEmail: 'alarm@chriswlucas.com',
   postmasterEmail: 'postmaster@chriswlucas.com',
-  domain: 'chriswlucas.com',
+  apexDomain: 'chriswlucas.com',
+  homeSubdomain: 'home',
+  websiteSubdomain: 'www',
   records: {
     MxRecords: [
       {
