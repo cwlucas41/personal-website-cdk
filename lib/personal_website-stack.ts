@@ -106,7 +106,7 @@ export class PersonalWebsiteStack extends Stack {
     })
 
     // Home subdomain email
-    this.createFromEmailInfra(homeZone, `mailto:${props.postmasterEmail}`)
+    this.createFromEmailInfra(homeZone, `v=DMARC1;p=reject;rua=mailto:${props.postmasterEmail}`)
     this.dnsManagementIamUser(`${homeZone.zoneName}-dns-management`, [homeZone])
   }
 
@@ -186,7 +186,7 @@ export class PersonalWebsiteStack extends Stack {
 
   createFromEmailInfra(
     zone: route53.IHostedZone,
-    dmarcRua: string,
+    dmarcPolicy: string,
     mailFromSubdomain: string = 'mail'
   ) {
     const zoneNameWithoutPeriods = zone.zoneName.replace(new RegExp(/\./g), '')
@@ -205,7 +205,7 @@ export class PersonalWebsiteStack extends Stack {
     new route53.TxtRecord(this, `Email-${zone.zoneName}-DmarcTxtRecord`, {
       zone,
       recordName: `_dmarc`,
-      values: [`v=DMARC1;p=reject;rua=${dmarcRua}`],
+      values: [ dmarcPolicy ],
     })
 
     // No templates used currently so no RENDERING_FAILURE destination
