@@ -187,7 +187,7 @@ export class PersonalWebsiteStack extends Stack {
   createFromEmailInfra(
     zone: route53.IHostedZone,
     dmarcRua: string,
-    fromSubdomain: string = 'mail'
+    mailFromSubdomain: string = 'mail'
   ) {
     const zoneNameWithoutPeriods = zone.zoneName.replace(new RegExp(/\./g), '')
 
@@ -198,7 +198,7 @@ export class PersonalWebsiteStack extends Stack {
 
     new ses.EmailIdentity(this, `Email-${zone.zoneName}`, {
       identity: ses.Identity.publicHostedZone(zone),
-      mailFromDomain: domainJoin([fromSubdomain, zone.zoneName]),
+      mailFromDomain: domainJoin([mailFromSubdomain, zone.zoneName]),
       configurationSet: defaultConfigurationSet,
     })
 
