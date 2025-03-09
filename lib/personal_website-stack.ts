@@ -33,15 +33,8 @@ export interface PersonalWebsiteStackProps extends StackProps {
   readonly records: DomainRecords,
 }
 
-interface CreateSesSqsDestinationProps {
-  name: string,
-  configurationSet: ses.IConfigurationSet,
-  event: ses.EmailSendingEvent,
-  /**
-   * Determines if an alarm is created
-   * @default true
-   */
-  alarm?: boolean
+function domainJoin(parts: (string | undefined)[]) {
+  return parts.filter(n => n).join('.')
 }
 
 export class PersonalWebsiteStack extends Stack {
@@ -89,17 +82,17 @@ export class PersonalWebsiteStack extends Stack {
 
     // Creates configured DNS records
     props.records.MxRecords?.forEach(recordProps =>
-      new route53.MxRecord(this, `${this.domainJoin([recordProps.recordName, props.apexDomain])}-mx`, { zone, ...recordProps })
+      new route53.MxRecord(this, `${domainJoin([recordProps.recordName, props.apexDomain])}-mx`, { zone, ...recordProps })
     )
     props.records.CnameRecords?.forEach(recordProps =>
-      new route53.CnameRecord(this, `${this.domainJoin([recordProps.recordName, props.apexDomain])}-cname`, { zone, ...recordProps })
+      new route53.CnameRecord(this, `${domainJoin([recordProps.recordName, props.apexDomain])}-cname`, { zone, ...recordProps })
     )
     props.records.TxtRecords?.forEach(recordProps =>
-      new route53.TxtRecord(this, `${this.domainJoin([recordProps.recordName, props.apexDomain])}-txt`, { zone, ...recordProps })
+      new route53.TxtRecord(this, `${domainJoin([recordProps.recordName, props.apexDomain])}-txt`, { zone, ...recordProps })
     )
 
     // Website hosting at website subdomain
-    const websiteDomain = this.domainJoin([props.websiteSubdomain, props.apexDomain])
+    const websiteDomain = domainJoin([props.websiteSubdomain, props.apexDomain])
     this.createWebHostingInfra(zone, websiteDomain, accessLogBucket)
 
     // Redirect apex to website
@@ -107,7 +100,7 @@ export class PersonalWebsiteStack extends Stack {
 
     // Home subdomain zone
     const homeZone = this.createHostedZone({
-      domainName: this.domainJoin([props.homeSubdomain, props.apexDomain]),
+      domainName: domainJoin([props.homeSubdomain, props.apexDomain]),
       delegatorZone: zone,
       dnssecKey
     })
@@ -160,6 +153,17 @@ export class PersonalWebsiteStack extends Stack {
     iamUser.attachInlinePolicy(policy)
   }
 
+  /**
+   * Creates a hosted zone, optionally with delegation and DNSSEC.
+   *
+   * This does not handle DNSSEC chain of trust. Creating DS records is done manually
+   * @see https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/dns-configuring-dnssec-enable-signing.html
+   *
+   * @param props.domainName name of zone
+   * @param props.delegatorZone optional zone to delegate from
+   * @param props.dnssecKey optional key to enable DNSSEC
+   * @returns
+   */
   createHostedZone(props: {
     domainName: string,
     delegatorZone?: route53.PublicHostedZone,
@@ -194,7 +198,7 @@ export class PersonalWebsiteStack extends Stack {
 
     new ses.EmailIdentity(this, `Email-${zone.zoneName}`, {
       identity: ses.Identity.publicHostedZone(zone),
-      mailFromDomain: this.domainJoin([fromSubdomain, zone.zoneName]),
+      mailFromDomain: domainJoin([fromSubdomain, zone.zoneName]),
       configurationSet: defaultConfigurationSet,
     })
 
@@ -283,7 +287,7 @@ export class PersonalWebsiteStack extends Stack {
       domainName: websiteDomain,
       validation: acm.CertificateValidation.fromDns(zone)
     })
-    this.createCertAlarm(certificate, websiteDomain)
+    this.createCertExpiryAlarm(certificate, websiteDomain)
 
     const urlRewriteFn = new cloudfront.Function(this, "url-rewrite-fn", {
       comment: "re-writes urls for single page web apps.",
@@ -330,15 +334,18 @@ export class PersonalWebsiteStack extends Stack {
     })
   }
 
-  // indirect routes as aliases for website
-  //
-  // each domain has a s3 redirecting bucket fronted by
-  // cloudformation (to provide https redirection) which
-  // redirects all requests to the website domain direct route.
-  //
-  // alternate names also exist to alias various subdomains
-  // to their redirecting bucket so that they are also redirected
-  // to the website domain.
+
+  /**
+   * indirect routes as aliases for website
+   *
+   * each domain has a s3 redirecting bucket fronted by
+   * cloudformation (to provide https redirection) which
+   * redirects all requests to the website domain direct route.
+   *
+   * alternate names also exist to alias various subdomains
+   * to their redirecting bucket so that they are also redirected
+   * to the website domain.
+   */
   createDomainRedirectInfra(
     zone: route53.HostedZone,
     domain: string,
@@ -346,7 +353,7 @@ export class PersonalWebsiteStack extends Stack {
     accessLogBucket: s3.Bucket,
     redirectingSubdomains: string[] = [],
   ) {
-    const alternateNames = redirectingSubdomains?.map(subdomain => this.domainJoin([subdomain, domain]))
+    const alternateNames = redirectingSubdomains?.map(subdomain => domainJoin([subdomain, domain]))
 
     const redirectBucket = new s3.Bucket(this, `${domain}-redirect-bucket`, {
       bucketName: domain,
@@ -360,7 +367,7 @@ export class PersonalWebsiteStack extends Stack {
       subjectAlternativeNames: alternateNames,
       validation: acm.CertificateValidation.fromDns(zone)
     })
-    this.createCertAlarm(redirectCertificate, domain)
+    this.createCertExpiryAlarm(redirectCertificate, domain)
 
     const redirectDistribution = new cloudfront.Distribution(this, `${domain}-dist`, {
       comment: `http/https redirection for ${domain}`,
@@ -393,16 +400,16 @@ export class PersonalWebsiteStack extends Stack {
     })
   }
 
-  createCertAlarm(cert: acm.ICertificate, domain: string) {
-    cert.metricDaysToExpiry().createAlarm(this, `${domain}-cert Expiry Alarm`, {
-      alarmName: `${domain} Certificate DaysToExpiry`,
-      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
-      evaluationPeriods: 1,
-      threshold: 45, // Automatic rotation happens between 60 and 45 days before expiry
-    }).addAlarmAction(...this.alarmActions);
-  }
-
-  createSesSqsDestination(props: CreateSesSqsDestinationProps): sns.ITopic {
+  createSesSqsDestination(props: {
+    name: string,
+    configurationSet: ses.IConfigurationSet,
+    event: ses.EmailSendingEvent,
+    /**
+     * Determines if an alarm is created
+     * @default true
+     */
+    alarm?: boolean
+  }): sns.ITopic {
     const alarm = props.alarm ?? true
 
     const topic = new sns.Topic(this, `${props.name}-mail-${props.event}-destination-topic`, {
@@ -536,7 +543,12 @@ export class PersonalWebsiteStack extends Stack {
     });
   }
 
-  domainJoin(parts: (string | undefined)[]) {
-    return parts.filter(n => n).join('.')
+  createCertExpiryAlarm(cert: acm.ICertificate, domain: string) {
+    cert.metricDaysToExpiry().createAlarm(this, `${domain}-cert Expiry Alarm`, {
+      alarmName: `${domain} Certificate DaysToExpiry`,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      evaluationPeriods: 1,
+      threshold: 45, // Automatic rotation happens between 60 and 45 days before expiry
+    }).addAlarmAction(...this.alarmActions);
   }
 }
