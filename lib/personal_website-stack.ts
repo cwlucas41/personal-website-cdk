@@ -395,7 +395,7 @@ export class PersonalWebsiteStack extends Stack {
 
   createCertAlarm(cert: acm.ICertificate, domain: string) {
     cert.metricDaysToExpiry().createAlarm(this, `${domain}-cert Expiry Alarm`, {
-      alarmName: `${domain}-cert Expiry Alarm`,
+      alarmName: `${domain} Certificate DaysToExpiry`,
       comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
       evaluationPeriods: 1,
       threshold: 45, // Automatic rotation happens between 60 and 45 days before expiry
@@ -444,12 +444,11 @@ export class PersonalWebsiteStack extends Stack {
   createSesAlarms() {
     [
       {
-        alarmName: 'SES Sends',
+        alarmName: 'Account — SES Sends',
         alarmDescription: `high number of sent emails`,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
         threshold: 100,
         evaluationPeriods: 1,
-        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
         metric: new cloudwatch.Metric({
           namespace: 'AWS/SES',
           metricName: 'Send',
@@ -458,21 +457,7 @@ export class PersonalWebsiteStack extends Stack {
         })
       },
       {
-        alarmName: 'SES Rejects',
-        alarmDescription: `high number of rejected emails`,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-        threshold: 0,
-        evaluationPeriods: 1,
-        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
-        metric: new cloudwatch.Metric({
-          namespace: 'AWS/SES',
-          metricName: 'Reject',
-          period: Duration.minutes(5),
-          statistic: 'sum',
-        })
-      },
-      {
-        alarmName: 'SES Bounce Rate',
+        alarmName: 'Account — SES Bounce Rate',
         alarmDescription: `high rate of email bounces`,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
         threshold: 0.05,
@@ -486,7 +471,7 @@ export class PersonalWebsiteStack extends Stack {
         })
       },
       {
-        alarmName: 'SES Complaint Rate',
+        alarmName: 'Account — SES Complaint Rate',
         alarmDescription: `high rate of email complaints`,
         comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
         threshold: 0.001,
@@ -494,7 +479,7 @@ export class PersonalWebsiteStack extends Stack {
         treatMissingData: cloudwatch.TreatMissingData.IGNORE,
         metric: new cloudwatch.Metric({
           namespace: 'AWS/SES',
-          metricName: 'Reputation.Complaint',
+          metricName: 'Reputation.ComplaintRate',
           period: Duration.minutes(5),
           statistic: 'avg',
         })
