@@ -37,6 +37,12 @@ function domainJoin(parts: (string | undefined)[]) {
   return parts.filter(n => n).join('.')
 }
 
+const commonCloudFrontProps: Partial<cloudfront.DistributionProps> = {
+  httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
+  priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
+  logIncludesCookies: false,
+}
+
 export class PersonalWebsiteStack extends Stack {
 
   alarmActions: cloudwatch.IAlarmAction[]
@@ -205,7 +211,7 @@ export class PersonalWebsiteStack extends Stack {
     new route53.TxtRecord(this, `Email-${zone.zoneName}-DmarcTxtRecord`, {
       zone,
       recordName: `_dmarc`,
-      values: [ dmarcPolicy ],
+      values: [dmarcPolicy],
     })
 
     // No templates used currently so no RENDERING_FAILURE destination
@@ -295,12 +301,12 @@ export class PersonalWebsiteStack extends Stack {
     })
 
     const distribution = new cloudfront.Distribution(this, `${websiteDomain}-dist`, {
-      comment: `website hosting for ${websiteDomain}`,
+      ...commonCloudFrontProps,
+      comment: `${websiteDomain} website hosting`,
       domainNames: [websiteDomain],
       certificate: certificate,
-      priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       logBucket: accessLogBucket,
-      logIncludesCookies: false,
+      publishAdditionalMetrics: true,
 
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket),
@@ -326,6 +332,9 @@ export class PersonalWebsiteStack extends Stack {
       ],
     })
 
+    this.createCloudFrontAlarms(websiteDomain, distribution, true)
+    this.createCloudWatchFunctionAlarms(`${websiteDomain} urlRewriteFunction`, distribution, urlRewriteFn)
+
     // direct route for website
     new route53.ARecord(this, `${websiteDomain}-to-cf`, {
       zone: zone,
@@ -336,15 +345,18 @@ export class PersonalWebsiteStack extends Stack {
 
 
   /**
-   * indirect routes as aliases for website
+   * Redirect routes as aliases for website
    *
-   * each domain has a s3 redirecting bucket fronted by
+   * Creates s3 redirecting bucket fronted by
    * cloudformation (to provide https redirection) which
    * redirects all requests to the website domain direct route.
    *
-   * alternate names also exist to alias various subdomains
+   * Alternate names also exist to alias various subdomains
    * to their redirecting bucket so that they are also redirected
    * to the website domain.
+   *
+   * The purpose of a redirect rather than having alternative names
+   * one the target is so that the target URL appears in the search bar of browsers
    */
   createDomainRedirectInfra(
     zone: route53.HostedZone,
@@ -359,6 +371,7 @@ export class PersonalWebsiteStack extends Stack {
       bucketName: domain,
       websiteRedirect: {
         hostName: targetDomain,
+        protocol: s3.RedirectProtocol.HTTPS
       }
     })
 
@@ -370,18 +383,19 @@ export class PersonalWebsiteStack extends Stack {
     this.createCertExpiryAlarm(redirectCertificate, domain)
 
     const redirectDistribution = new cloudfront.Distribution(this, `${domain}-dist`, {
-      comment: `http/https redirection for ${domain}`,
+      ...commonCloudFrontProps,
+      comment: `redirect to ${targetDomain}`,
       domainNames: [domain, ...alternateNames],
       certificate: redirectCertificate,
-      priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
       logBucket: accessLogBucket,
-      logIncludesCookies: false,
 
       defaultBehavior: {
         origin: new origins.S3StaticWebsiteOrigin(redirectBucket),
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
       },
     })
+
+    this.createCloudFrontAlarms(domain, redirectDistribution, false)
 
     // route for domain name to redirect distribution
     new route53.ARecord(this, `${domain}-to-cf`, {
@@ -550,5 +564,102 @@ export class PersonalWebsiteStack extends Stack {
       evaluationPeriods: 1,
       threshold: 45, // Automatic rotation happens between 60 and 45 days before expiry
     }).addAlarmAction(...this.alarmActions);
+  }
+
+  createCloudFrontAlarms(domainName: string, distribution: cloudfront.Distribution, additionalMetricsEnabled: boolean = false) {
+
+    const alarmProps: cloudwatch.AlarmProps[] = [
+      {
+        alarmName: `${domainName} CloudFront 5xx Error Rate`,
+        alarmDescription: `5xx error rate is too high`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 0.01,
+        evaluationPeriods: 5,
+        treatMissingData: cloudwatch.TreatMissingData.IGNORE,
+        metric: distribution.metric5xxErrorRate({
+          period: Duration.minutes(1),
+          statistic: 'avg',
+          dimensionsMap: {
+            DistributionId: distribution.distributionId,
+            Region: 'Global',
+          },
+        })
+      },
+    ]
+
+    if (additionalMetricsEnabled) {
+      alarmProps.push(
+        {
+          alarmName: `${domainName} CloudFront Origin Latency`,
+          alarmDescription: `origin latency is too high`,
+          comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+          // the S3 Origin response timeout is 30s
+          // https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/RequestAndResponseBehaviorS3Origin.html#s3-origin-timeout-attempts
+          // alarm at p90 of 80% of the timeout
+          threshold: Math.ceil(Duration.seconds(30).toMilliseconds() * 0.80),
+          evaluationPeriods: 5,
+          treatMissingData: cloudwatch.TreatMissingData.IGNORE,
+          metric: distribution.metricOriginLatency({
+            period: Duration.minutes(1),
+            statistic: 'p90',
+            dimensionsMap: {
+              DistributionId: distribution.distributionId,
+              Region: 'Global',
+            },
+          })
+        },
+      )
+    }
+
+    alarmProps.forEach((props) => {
+      new cloudwatch.Alarm(this, `${props.alarmName} Alarm`, props).addAlarmAction(...this.alarmActions);
+    });
+  }
+
+  createCloudWatchFunctionAlarms(functionName: string, distribution: cloudfront.IDistribution, fn: cloudfront.Function) {
+    const alarmProps = [
+      {
+        alarmName: `${functionName} Execution Errors`,
+        alarmDescription: `Function execution errors are present`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 0,
+        evaluationPeriods: 5,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/CloudFront',
+          metricName: 'FunctionExecutionErrors',
+          dimensionsMap: {
+            FunctionName: fn.functionName,
+            DistributionId: distribution.distributionId,
+            Region: 'Global',
+          },
+          period: Duration.minutes(1),
+          statistic: 'sum',
+        })
+      },
+      {
+        alarmName: `${functionName} Throttles`,
+        alarmDescription: `Function throttles are present`,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        threshold: 0,
+        evaluationPeriods: 5,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+        metric: new cloudwatch.Metric({
+          namespace: 'AWS/CloudFront',
+          metricName: 'FunctionThrottles',
+          dimensionsMap: {
+            FunctionName: fn.functionName,
+            DistributionId: distribution.distributionId,
+            Region: 'Global',
+          },
+          period: Duration.minutes(1),
+          statistic: 'sum',
+        })
+      },
+    ]
+
+    alarmProps.forEach((props) => {
+      new cloudwatch.Alarm(this, `${props.alarmName} Alarm`, props).addAlarmAction(...this.alarmActions);
+    });
   }
 }
