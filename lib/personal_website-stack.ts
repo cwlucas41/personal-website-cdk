@@ -97,12 +97,24 @@ export class PersonalWebsiteStack extends Stack {
       new route53.TxtRecord(this, `${domainJoin([recordProps.recordName, props.apexDomain])}-txt`, { zone, ...recordProps })
     )
 
-    // Website hosting at website subdomain
+    // Certificate for website
     const websiteDomain = domainJoin([props.websiteSubdomain, props.apexDomain])
-    this.createWebHostingInfra(zone, websiteDomain, accessLogBucket)
+    const redirectToWebsiteDomains = [props.apexDomain]
+
+    const certificate = new acm.Certificate(this, `${websiteDomain}-cert`, {
+      domainName: websiteDomain,
+      validation: acm.CertificateValidation.fromDns(zone),
+      subjectAlternativeNames: redirectToWebsiteDomains,
+    })
+    this.createCertExpiryAlarm(certificate, websiteDomain)
+
+    // Website hosting at website subdomain
+    this.createWebHostingInfra(zone, certificate, websiteDomain, accessLogBucket)
 
     // Redirect apex to website
-    this.createDomainRedirectInfra(zone, props.apexDomain, websiteDomain, accessLogBucket)
+    redirectToWebsiteDomains.forEach(redirectDomain =>
+      this.createDomainRedirectInfra(zone, certificate, redirectDomain, websiteDomain, accessLogBucket)
+    )
 
     // Home subdomain zone
     const homeZone = this.createHostedZone({
@@ -280,6 +292,7 @@ export class PersonalWebsiteStack extends Stack {
 
   createWebHostingInfra(
     zone: route53.HostedZone,
+    certificate: acm.ICertificate,
     websiteDomain: string,
     accessLogBucket: s3.Bucket,
   ) {
@@ -288,12 +301,6 @@ export class PersonalWebsiteStack extends Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED
     })
-
-    const certificate = new acm.Certificate(this, `${websiteDomain}-cert`, {
-      domainName: websiteDomain,
-      validation: acm.CertificateValidation.fromDns(zone)
-    })
-    this.createCertExpiryAlarm(certificate, websiteDomain)
 
     const urlRewriteFn = new cloudfront.Function(this, "url-rewrite-fn", {
       comment: "re-writes urls for single page web apps.",
@@ -360,6 +367,7 @@ export class PersonalWebsiteStack extends Stack {
    */
   createDomainRedirectInfra(
     zone: route53.HostedZone,
+    certificate: acm.ICertificate,
     domain: string,
     targetDomain: string,
     accessLogBucket: s3.Bucket,
@@ -375,18 +383,11 @@ export class PersonalWebsiteStack extends Stack {
       }
     })
 
-    const redirectCertificate = new acm.Certificate(this, `${domain}-cert`, {
-      domainName: domain,
-      subjectAlternativeNames: alternateNames,
-      validation: acm.CertificateValidation.fromDns(zone)
-    })
-    this.createCertExpiryAlarm(redirectCertificate, domain)
-
     const redirectDistribution = new cloudfront.Distribution(this, `${domain}-dist`, {
       ...commonCloudFrontProps,
       comment: `redirect to ${targetDomain}`,
       domainNames: [domain, ...alternateNames],
-      certificate: redirectCertificate,
+      certificate: certificate,
       logBucket: accessLogBucket,
 
       defaultBehavior: {
