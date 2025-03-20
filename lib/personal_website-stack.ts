@@ -17,6 +17,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import * as cr from 'aws-cdk-lib/custom-resources';
+import { AddressRecords } from '../constructs/AddressRecords';
 
 export interface DomainRecords {
   readonly MxRecords?: Omit<route53.MxRecordProps, 'zone'>[]
@@ -342,11 +343,13 @@ export class PersonalWebsiteStack extends Stack {
     this.createCloudFrontAlarms(websiteDomain, distribution, true)
     this.createCloudWatchFunctionAlarms(`${websiteDomain} urlRewriteFunction`, distribution, urlRewriteFn)
 
+    const cloudFrontTarget = route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(distribution))
+
     // direct route for website
-    new route53.ARecord(this, `${websiteDomain}-to-cf`, {
-      zone: zone,
-      recordName: websiteDomain,
-      target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(distribution)),
+    new AddressRecords(this, `${websiteDomain}-address-records`, {
+      zone,
+      domainName: websiteDomain,
+      target: cloudFrontTarget,
     })
   }
 
@@ -368,25 +371,25 @@ export class PersonalWebsiteStack extends Stack {
   createDomainRedirectInfra(
     zone: route53.HostedZone,
     certificate: acm.ICertificate,
-    domain: string,
-    targetDomain: string,
+    domainName: string,
+    targetDomainName: string,
     accessLogBucket: s3.Bucket,
     redirectingSubdomains: string[] = [],
   ) {
-    const alternateNames = redirectingSubdomains?.map(subdomain => domainJoin([subdomain, domain]))
+    const alternateNames = redirectingSubdomains?.map(subdomain => domainJoin([subdomain, domainName]))
 
-    const redirectBucket = new s3.Bucket(this, `${domain}-redirect-bucket`, {
-      bucketName: domain,
+    const redirectBucket = new s3.Bucket(this, `${domainName}-redirect-bucket`, {
+      bucketName: domainName,
       websiteRedirect: {
-        hostName: targetDomain,
+        hostName: targetDomainName,
         protocol: s3.RedirectProtocol.HTTPS
       }
     })
 
-    const redirectDistribution = new cloudfront.Distribution(this, `${domain}-dist`, {
+    const redirectDistribution = new cloudfront.Distribution(this, `${domainName}-dist`, {
       ...commonCloudFrontProps,
-      comment: `redirect to ${targetDomain}`,
-      domainNames: [domain, ...alternateNames],
+      comment: `redirect to ${targetDomainName}`,
+      domainNames: [domainName, ...alternateNames],
       certificate: certificate,
       logBucket: accessLogBucket,
 
@@ -396,21 +399,23 @@ export class PersonalWebsiteStack extends Stack {
       },
     })
 
-    this.createCloudFrontAlarms(domain, redirectDistribution, false)
+    this.createCloudFrontAlarms(domainName, redirectDistribution, false)
+
+    const cloudFrontTarget = route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(redirectDistribution))
 
     // route for domain name to redirect distribution
-    new route53.ARecord(this, `${domain}-to-cf`, {
-      zone: zone,
-      recordName: domain,
-      target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(redirectDistribution)),
+    new AddressRecords(this, `${domainName}-address-records`, {
+      zone,
+      domainName: domainName,
+      target: cloudFrontTarget,
     })
 
     // route for alternate domain names to redirect distribution
     alternateNames?.forEach(alternateName => {
-      new route53.ARecord(this, `${alternateName}-to-cf`, {
-        zone: zone,
-        recordName: alternateName,
-        target: route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(redirectDistribution)),
+      new AddressRecords(this, `${alternateName}-address-records`, {
+        zone,
+        domainName: alternateName,
+        target: cloudFrontTarget,
       })
     })
   }
