@@ -31,6 +31,7 @@ export interface PersonalWebsiteStackProps extends StackProps {
   readonly apexDomain: string,
   readonly homeSubdomain: string,
   readonly websiteSubdomain: string,
+  readonly betaWebsiteSubdomain: string,
   readonly records: DomainRecords,
 }
 
@@ -98,24 +99,32 @@ export class PersonalWebsiteStack extends Stack {
       new route53.TxtRecord(this, `${domainJoin([recordProps.recordName, props.apexDomain])}-txt`, { zone, ...recordProps })
     )
 
-    // Certificate for website
     const websiteDomain = domainJoin([props.websiteSubdomain, props.apexDomain])
     const redirectToWebsiteDomains = [props.apexDomain]
 
+    const betaWebsiteDomain = domainJoin([props.betaWebsiteSubdomain, props.apexDomain])
+
+    // Certificate for website
     const certificate = new acm.Certificate(this, `${websiteDomain}-cert`, {
       domainName: websiteDomain,
       validation: acm.CertificateValidation.fromDns(zone),
-      subjectAlternativeNames: redirectToWebsiteDomains,
+      subjectAlternativeNames: [
+        ...redirectToWebsiteDomains,
+        betaWebsiteDomain,
+      ],
     })
     this.createCertExpiryAlarm(certificate, websiteDomain)
 
-    // Website hosting at website subdomain
+    // Prod website hosting
     this.createWebHostingInfra(zone, certificate, websiteDomain, accessLogBucket)
 
-    // Redirect apex to website
+    // Redirects to prod website
     redirectToWebsiteDomains.forEach(redirectDomain =>
       this.createDomainRedirectInfra(zone, certificate, redirectDomain, websiteDomain, accessLogBucket)
     )
+
+    // Beta website hosting
+    this.createWebHostingInfra(zone, certificate, betaWebsiteDomain, accessLogBucket, false)
 
     // Home subdomain zone
     const homeZone = this.createHostedZone({
@@ -296,6 +305,7 @@ export class PersonalWebsiteStack extends Stack {
     certificate: acm.ICertificate,
     websiteDomain: string,
     accessLogBucket: s3.Bucket,
+    cloudFrontAdditionalMetrics = true,
   ) {
     const siteBucket = new s3.Bucket(this, `${websiteDomain}-origin-bucket`, {
       bucketName: `${websiteDomain}`,
@@ -303,7 +313,7 @@ export class PersonalWebsiteStack extends Stack {
       objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED
     })
 
-    const urlRewriteFn = new cloudfront.Function(this, "url-rewrite-fn", {
+    const urlRewriteFn = new cloudfront.Function(this, `${websiteDomain}-url-rewrite-fn`, {
       comment: "re-writes urls for single page web apps.",
       code: cloudfront.FunctionCode.fromFile({ filePath: 'src/url-rewrite-single-page-apps.js' })
     })
@@ -314,7 +324,7 @@ export class PersonalWebsiteStack extends Stack {
       domainNames: [websiteDomain],
       certificate: certificate,
       logBucket: accessLogBucket,
-      publishAdditionalMetrics: true,
+      publishAdditionalMetrics: cloudFrontAdditionalMetrics,
 
       defaultBehavior: {
         origin: origins.S3BucketOrigin.withOriginAccessControl(siteBucket),
@@ -340,7 +350,7 @@ export class PersonalWebsiteStack extends Stack {
       ],
     })
 
-    this.createCloudFrontAlarms(websiteDomain, distribution, true)
+    this.createCloudFrontAlarms(websiteDomain, distribution, cloudFrontAdditionalMetrics)
     this.createCloudWatchFunctionAlarms(`${websiteDomain} urlRewriteFunction`, distribution, urlRewriteFn)
 
     const cloudFrontTarget = route53.RecordTarget.fromAlias(new route53_targets.CloudFrontTarget(distribution))

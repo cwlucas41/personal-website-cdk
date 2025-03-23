@@ -13,6 +13,7 @@ new PersonalWebsiteStack(app, 'PersonalWebsiteStack', {
   apexDomain: 'chriswlucas.com',
   homeSubdomain: 'home',
   websiteSubdomain: 'www',
+  betaWebsiteSubdomain: 'beta',
   records: {
     MxRecords: [
       {
