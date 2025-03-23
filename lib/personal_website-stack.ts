@@ -134,7 +134,7 @@ export class PersonalWebsiteStack extends Stack {
     })
 
     // Home subdomain email
-    this.createFromEmailInfra(homeZone, `v=DMARC1;p=reject;rua=mailto:${props.postmasterEmail}`)
+    this.createFromEmailInfra(homeZone, `v=DMARC1; p=none; rua=mailto:${props.postmasterEmail}`)
     this.dnsManagementIamUser(`${homeZone.zoneName}-dns-management`, [homeZone])
   }
 
